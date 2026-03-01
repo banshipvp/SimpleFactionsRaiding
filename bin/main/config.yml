@@ -1,0 +1,18 @@
+performance:
+  # Maximum number of core-chunk TNT impacts processed each tick.
+  # Lower = smoother TPS, but raids are processed with more delay during TNT spikes.
+  max-core-impacts-per-tick: 300
+
+  # Maximum queued core-chunk impacts waiting to be processed.
+  # Increase if you expect very large barrages.
+  max-core-impact-queue-size: 100000
+
+  # How often (in ticks) to flush aggregated raid notifications.
+  # 20 ticks = 1 second.
+  broadcast-interval-ticks: 20
+
+  # Maximum scan radius for /f tnt fill and /f tnt siphon commands.
+  tnt-command-max-radius: 32
+
+  # Default radius for /f tnt siphon when not explicitly provided.
+  tnt-command-default-radius: 16

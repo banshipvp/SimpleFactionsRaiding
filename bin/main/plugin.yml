@@ -1,0 +1,13 @@
+name: SimpleFactionsRaiding
+version: 1.0.0
+main: local.simplefactionsraiding.SimpleFactionsRaidingPlugin
+description: Raiding mechanics for SimpleFactions with custom TNT and core chunk system
+depend:
+  - SimpleFactions
+authors:
+  - Development Team
+
+commands:
+  raid:
+    description: Raid management and status commands
+    usage: /raid <status|info|points|start|stop> <faction>
