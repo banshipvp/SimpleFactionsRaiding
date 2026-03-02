@@ -1,5 +1,7 @@
 name: SimpleFactionsRaiding
 version: 1.0.0
+api-version: "1.13"
+api: bukkit
 main: local.simplefactionsraiding.SimpleFactionsRaidingPlugin
 description: Raiding mechanics for SimpleFactions with custom TNT and core chunk system
 depend:
@@ -7,7 +9,98 @@ depend:
 authors:
   - Development Team
 
+softdepend:
+  - WorldEdit
+
 commands:
   raid:
     description: Raid management and status commands
     usage: /raid <status|info|points|start|stop> <faction>
+  pastecannon:
+    description: Instantly paste a WorldEdit schematic at your location for cannon testing
+    usage: /pastecannon [schematic] [-a]
+    permission: simplefactionsraiding.pastecannon
+    permission-message: "§cYou don't have permission to paste schematics."
+  collectionfilter:
+    description: Open collection chest filter menu
+    usage: /collectionfilter
+    permission: simplefactionsraiding.collectionfilter
+  createcollectionchest:
+    description: Create a collection chest at your location
+    usage: /createcollectionchest <chest|trapped>
+    permission: simplefactionsraiding.admin.createcollectionchest
+    permission-message: "§cYou don't have permission to create collection chests."
+  customtnt:
+    description: Give custom TNT variants
+    usage: /customtnt give <player> [lethal|gigantic|lucky|random] [amount]
+    permission: simplefactionsraiding.admin.customexplosive
+    permission-message: "§cYou don't have permission to use custom TNT commands."
+  customcreeper:
+    description: Give custom creeper egg variants
+    usage: /customcreeper give <player> [lethal|gigantic|lucky|random] [amount]
+    permission: simplefactionsraiding.admin.customexplosive
+    permission-message: "§cYou don't have permission to use custom creeper commands."
+  wild:
+    description: Teleport to a random wilderness location
+    usage: /wild
+    aliases: [wilderness]
+    permission: simplefactionsraiding.wild
+  widlerness:
+    description: Teleport to a random wilderness location
+    usage: /widlerness
+    permission: simplefactionsraiding.wild
+  hub:
+    description: Teleport to hub and receive server selector compass
+    usage: /hub
+    permission: simplefactionsraiding.hub
+  server:
+    description: Teleport to named server world
+    usage: /server factions
+    permission: simplefactionsraiding.server
+  worldreset:
+    description: Reset a world (spawn/nether/end)
+    usage: /worldreset <spawn|nether|end|worldname> confirm
+    permission: simplefactionsraiding.admin.worldreset
+  restartnow:
+    description: Start a 60 second server reboot countdown
+    usage: /restartnow
+    permission: simplefactionsraiding.admin.restart
+  forcerestart:
+    description: Force immediate server restart
+    usage: /forcerestart
+    permission: simplefactionsraiding.admin.forcerestart
+
+permissions:
+  simplefactionsraiding.pastecannon:
+    description: Allows pasting schematics with /pastecannon
+    default: op
+  simplefactionsraiding.collectionfilter:
+    description: Allows using collection chest filter menu
+    default: true
+  simplefactionsraiding.admin.createcollectionchest:
+    description: Allows creating collection chests
+    default: op
+  simplefactionsraiding.admin.customexplosive:
+    description: Allows giving custom TNT and custom creeper eggs
+    default: op
+  simplefactionsraiding.wild:
+    description: Allows use of /wild and /widlerness
+    default: true
+  simplefactionsraiding.wild.bypasscooldown:
+    description: Bypass /wild cooldown
+    default: op
+  simplefactionsraiding.hub:
+    description: Allows use of /hub command
+    default: true
+  simplefactionsraiding.server:
+    description: Allows use of /server command
+    default: true
+  simplefactionsraiding.admin.worldreset:
+    description: Allows resetting worlds via /worldreset
+    default: op
+  simplefactionsraiding.admin.restart:
+    description: Allows starting restart countdown via /restartnow
+    default: op
+  simplefactionsraiding.admin.forcerestart:
+    description: Allows immediate restart via /forcerestart
+    default: op

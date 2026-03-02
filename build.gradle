@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'eclipse'
 }
 
 group = 'local.simplefactionsraiding'
@@ -17,11 +18,18 @@ repositories {
         name = "jitpack"
         url = "https://jitpack.io"
     }
+
+    maven {
+        name = "enginehub"
+        url = "https://maven.enginehub.org/repo/"
+    }
 }
 
 dependencies {
     compileOnly "io.papermc.paper:paper-api:1.21.10-R0.1-SNAPSHOT"
     compileOnly fileTree(dir: "../SimpleFactions/build/libs", include: "*.jar")
+    compileOnly("com.sk89q.worldedit:worldedit-bukkit:7.3.6") { transitive = false }
+    compileOnly("com.sk89q.worldedit:worldedit-core:7.3.6")   { transitive = false }
 }
 
 java {

@@ -78,6 +78,9 @@ public class RaidListener implements Listener {
         }
 
         int pointsToSteal = raidingManager.calculatePointsStolen(100, blockY);
+        if (type != null) {
+            pointsToSteal = (int) Math.max(1, Math.round(pointsToSteal * customTNTManager.getRaidPointMultiplier(type)));
+        }
         enqueueImpact(new RaidImpact(defendingFaction, attackerName, type, pointsToSteal, blockY, false));
     }
 

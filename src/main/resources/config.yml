@@ -1,3 +1,76 @@
+cannoning:
+  # When true, overrides vanilla TNT dispenser spawning so TNT is placed exactly
+  # at the center of the block in front of the dispenser with zero initial velocity.
+  # This prevents the TNT hitbox from clipping into adjacent blocks on spawn.
+  fix-dispenser-tnt-physics: true
+
+  # Fuse duration in ticks for dispenser-spawned TNT (80 ticks = 4 seconds, vanilla default).
+  tnt-fuse-ticks: 80
+
+  # Cancel horizontal water-flow acceleration on TNT each tick.
+  # TNT with high horizontal speed (from an explosion) is unaffected so blast-pushed
+  # TNT can still travel through water. Only low-speed drift (water current) is removed.
+  cancel-water-flow: true
+
+  # Stop TNT from entering partial blocks (slabs, trapdoors, fences, walls, stairs,
+  # ladders, iron bars, chain) by resolving collisions per velocity axis.
+  # Block.getBoundingBox() is used so top/bottom slabs, open/closed trapdoors, etc.
+  # are all handled with correct geometry.
+  partial-block-collision: true
+
+  # Adjust explosion-induced velocity on nearby TNT based on how much of the ray
+  # from the explosion to each TNT passes through partial-block bounding boxes.
+  # A bottom slab sitting between the explosion and the TNT reduces the upward force;
+  # an open trapdoor acting as a blast shield reduces lateral force proportionally.
+  partial-block-exposure: true
+
+  # Prevent players and mobs from pushing TNT entities off their trajectory by
+  # disabling entity-entity collision on all TNT spawned while this is enabled.
+  anti-nudge: true
+
+  # Fix the explosion yield to a constant value rather than letting vanilla's
+  # randomised ray-cast algorithm produce slightly different radii each shot.
+  # All cannons of the same design will behave identically shot-to-shot.
+  constant-explosion-yield: true
+
+  # Explosion radius to use when constant-explosion-yield is enabled.
+  # 4.0 matches vanilla TNT. Increase for slightly larger craters, decrease to
+  # reduce server-side explosion calculation cost.
+  explosion-yield: 4.0
+
+  # Clamp TNT speed to this value in blocks/tick. Prevents run-away TNT from
+  # leaving loaded chunks and either disappearing or causing chunk-load cascades.
+  velocity-cap: true
+  max-velocity: 3.0
+
+  # Normalise the initial vertical velocity of sand/gravel falling-block entities
+  # to the vanilla default (-0.04 blocks/tick). Unusual block-update paths can
+  # inject a different starting Y velocity and cause "stuck sand" (doubters).
+  sand-stasis-normalise: true
+
+  # AtlasSpigot: cancel all block damage when TNT detonates inside water or lava.
+  # Explosion entity-knockback still occurs. Lava is exempt if explode-lava is true.
+  explosion-water-check: true
+
+  # AtlasSpigot: TNT explosions also destroy waterlogged blocks inside the blast radius.
+  explode-waterlogged: false
+
+  # AtlasSpigot: TNT explosions also destroy lava source blocks inside the blast radius.
+  explode-lava: false
+
+  # AtlasSpigot: Collapse duplicate TNT/FallingBlock entities that share the same
+  # position, velocity, and fuse each tick. Reduces entity count on large cannon shots.
+  entity-merge: true
+
+  # AtlasSpigot: Force-load the chunk each TNT/FallingBlock entity is in while it
+  # is active so entities never vanish from entering an unloaded chunk.
+  chunk-loading: true
+
+  # AtlasSpigot: Disable the random horizontal scatter velocity applied to TNT on
+  # spawn. When false (recommended for cannoning), TNT fires perfectly straight.
+  # When true, TNT keeps vanilla lateral scatter (~0.02 b/t).
+  tnt-spread: false
+
 performance:
   # Maximum number of core-chunk TNT impacts processed each tick.
   # Lower = smoother TPS, but raids are processed with more delay during TNT spikes.
@@ -16,3 +89,49 @@ performance:
 
   # Default radius for /f tnt siphon when not explicitly provided.
   tnt-command-default-radius: 16
+
+wilderness:
+  # /wild and /widlerness cooldown in seconds.
+  cooldown-seconds: 60
+
+  # Lock overworld to 5000x5000 via world border.
+  world-border-size: 5000
+  world-border-center-x: 0.0
+  world-border-center-z: 0.0
+
+  # Keep random teleports away from border edge.
+  border-padding: 32
+
+  # Max attempts to find a safe random location.
+  max-attempts: 120
+
+worlds:
+  # Hub world used by /hub and pre-restart player routing.
+  hub: hub
+
+  # Main faction server world name ("Faction Server" destination in selector compass).
+  faction-spawn: faction_spawn
+
+  # Additional dimensions for the faction server.
+  faction-nether: faction_nether
+  faction-end: faction_end
+
+restart:
+  # Automatic scheduled restart.
+  enabled: true
+
+  # Restart every X minutes.
+  interval-minutes: 180
+
+  # Broadcast warning at these remaining seconds.
+  warning-seconds:
+    - 300
+    - 120
+    - 60
+    - 30
+    - 10
+    - 5
+    - 4
+    - 3
+    - 2
+    - 1
