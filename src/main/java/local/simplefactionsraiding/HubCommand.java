@@ -33,6 +33,9 @@ public class HubCommand implements CommandExecutor {
             return true;
         }
 
+        // Save last location before teleporting to hub
+        multiWorldManager.saveLastLocation(player);
+
         if (!multiWorldManager.teleportToHub(player)) {
             player.sendMessage("§cHub world is not available.");
             return true;

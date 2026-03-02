@@ -74,6 +74,8 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getCommand("widlerness").setExecutor(wildernessCommand);
         getCommand("hub").setExecutor(hubCommand);
         getCommand("server").setExecutor(new ServerCommand(multiWorldManager));
+        getCommand("spawn").setExecutor(new SpawnCommand(this, multiWorldManager));
+        getCommand("setspawn").setExecutor(new SetSpawnCommand(this));
         getCommand("worldreset").setExecutor(new WorldResetCommand(this, multiWorldManager));
         RestartAdminCommand restartAdminCommand = new RestartAdminCommand(autoRestartManager);
         getCommand("restartnow").setExecutor(restartAdminCommand);

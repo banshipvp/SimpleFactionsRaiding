@@ -102,6 +102,7 @@ public class CannonConsistencyListener implements Listener {
         for (var world : Bukkit.getWorlds()) {
             if (velocityCapEnabled) tickVelocityCap(world);
             if (entityMergeEnabled)  tickEntityMerge(world);
+            tickFallingBlockStability(world);
         }
     }
 
@@ -193,7 +194,11 @@ public class CannonConsistencyListener implements Listener {
         }
 
         if (chunkLoadingEnabled) {
-            tnt.getLocation().getChunk().load(false);
+            // Only load if not already loaded to avoid triggering block updates
+            org.bukkit.Chunk chunk = tnt.getLocation().getChunk();
+            if (!chunk.isLoaded()) {
+                chunk.load(false);
+            }
         }
     }
 
@@ -206,7 +211,11 @@ public class CannonConsistencyListener implements Listener {
         if (!(event.getEntity() instanceof FallingBlock fb)) return;
 
         if (chunkLoadingEnabled) {
-            fb.getLocation().getChunk().load(false);
+            // Only load if not already loaded to avoid triggering block updates
+            org.bukkit.Chunk chunk = fb.getLocation().getChunk();
+            if (!chunk.isLoaded()) {
+                chunk.load(false);
+            }
         }
 
         if (!sandStasisEnabled) return;
@@ -231,14 +240,51 @@ public class CannonConsistencyListener implements Listener {
         }
     }
 
+    /**
+     * Prevent falling blocks (sand) from spreading horizontally when hitting walls.
+     * Maintains cannon precision by locking X/Z position on collision.
+     */
+    private void tickFallingBlockStability(org.bukkit.World world) {
+        for (FallingBlock fb : world.getEntitiesByClass(FallingBlock.class)) {
+            if (!fb.isValid()) continue;
+            
+            String matName = fb.getBlockData().getMaterial().name();
+            boolean isSand = matName.equals("SAND") || matName.equals("RED_SAND");
+            if (!isSand) continue;
+            
+            // Check if falling block is near a solid block (wall collision)
+            Block blockAt = fb.getLocation().getBlock();
+            Block below = blockAt.getRelative(0, -1, 0);
+            
+            // If there's a solid block nearby (collision), lock horizontal movement
+            if (below.getType().isSolid()) {
+                Vector vel = fb.getVelocity();
+                // Remove all horizontal velocity to prevent spreading
+                if (Math.abs(vel.getX()) > 0.001 || Math.abs(vel.getZ()) > 0.001) {
+                    fb.setVelocity(new Vector(0, vel.getY(), 0));
+                }
+            }
+        }
+    }
+
     // =========================================================================
     // 2. Constant explosion yield
     // =========================================================================
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onExplosionPrime(ExplosionPrimeEvent event) {
+        if (!(event.getEntity() instanceof TNTPrimed tnt)) return;
+        
+        // Prevent TNT from exploding inside chests (for cannon mechanics)
+        Block block = tnt.getLocation().getBlock();
+        Material mat = block.getType();
+        if (mat == Material.CHEST || mat == Material.TRAPPED_CHEST 
+                || mat == Material.BARREL || mat == Material.DISPENSER) {
+            event.setCancelled(true);
+            return;
+        }
+        
         if (!constantYieldEnabled) return;
-        if (!(event.getEntity() instanceof TNTPrimed)) return;
         event.setRadius(constantYield);
         event.setFire(false);
     }
@@ -259,9 +305,12 @@ public class CannonConsistencyListener implements Listener {
         //    Exception: if explode-lava is on and origin is lava, allow it.
         if (explosionWaterCheckEnabled) {
             Material mat = originBlock.getType();
+            boolean isWaterlogged = originBlock.getBlockData() instanceof org.bukkit.block.data.Waterlogged wl 
+                    && wl.isWaterlogged();
             boolean inLiquid = mat == Material.WATER
                     || mat == Material.LAVA
-                    || mat == Material.BUBBLE_COLUMN;
+                    || mat == Material.BUBBLE_COLUMN
+                    || isWaterlogged;
             boolean lavaExempt = explodeLavaEnabled && mat == Material.LAVA;
 
             if (inLiquid && !lavaExempt) {

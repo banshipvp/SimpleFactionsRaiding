@@ -18,7 +18,7 @@ commands:
     usage: /raid <status|info|points|start|stop> <faction>
   pastecannon:
     description: Instantly paste a WorldEdit schematic at your location for cannon testing
-    usage: /pastecannon [schematic] [-a]
+    usage: /pastecannon [schematic] [-a] [-o]
     permission: simplefactionsraiding.pastecannon
     permission-message: "§cYou don't have permission to paste schematics."
   collectionfilter:
@@ -69,6 +69,14 @@ commands:
     description: Force immediate server restart
     usage: /forcerestart
     permission: simplefactionsraiding.admin.forcerestart
+  spawn:
+    description: Teleport to spawn location
+    usage: /spawn
+    permission: simplefactionsraiding.spawn
+  setspawn:
+    description: Set spawn location for current world
+    usage: /setspawn
+    permission: simplefactionsraiding.setspawn
 
 permissions:
   simplefactionsraiding.pastecannon:
@@ -103,4 +111,10 @@ permissions:
     default: op
   simplefactionsraiding.admin.forcerestart:
     description: Allows immediate restart via /forcerestart
+    default: op
+  simplefactionsraiding.spawn:
+    description: Allows use of /spawn command
+    default: true
+  simplefactionsraiding.setspawn:
+    description: Allows setting spawn location via /setspawn
     default: op

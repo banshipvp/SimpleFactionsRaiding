@@ -122,8 +122,17 @@ public class TNTPhysicsListener implements Listener {
                     if (isInWater(block)) {
                         double hSpeedSq = vel.getX() * vel.getX() + vel.getZ() * vel.getZ();
                         if (hSpeedSq < WATER_CANCEL_SPEED_SQ) {
+                            // Cancel horizontal water drift
                             vel.setX(0);
                             vel.setZ(0);
+                            changed = true;
+                        }
+                        // Prevent water from slowing vertical fall - TNT should fall at normal gravity
+                        // Water buoyancy makes TNT float slowly; we force normal downward acceleration
+                        // TNT should be falling at least at terminal velocity in water (~-0.3) or accelerating
+                        if (vel.getY() > -0.3) {
+                            // Apply stronger downward acceleration to counteract water buoyancy
+                            vel.setY(vel.getY() - 0.08);
                             changed = true;
                         }
                         // High-speed horizontal: explosion-induced, leave it alone

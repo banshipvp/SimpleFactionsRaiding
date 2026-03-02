@@ -62,6 +62,7 @@ public class PlayerProfileListener implements Listener {
     @EventHandler
     public void onQuit(PlayerQuitEvent event) {
         saveCurrentProfile(event.getPlayer());
+        multiWorldManager.saveLastLocation(event.getPlayer());
         flushFile();
     }
 
@@ -70,6 +71,11 @@ public class PlayerProfileListener implements Listener {
         Player player = event.getPlayer();
         ProfileType from = worldToProfile(event.getFrom().getName());
         ProfileType to = worldToProfile(player.getWorld().getName());
+
+        // Save last location when leaving faction worlds
+        if (from == ProfileType.FACTIONS) {
+            multiWorldManager.saveLastLocation(player);
+        }
 
         if (from == to) {
             return;

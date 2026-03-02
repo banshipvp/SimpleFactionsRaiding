@@ -57,9 +57,9 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
 
     private final JavaPlugin plugin;
 
-    // Per-player undo/redo stacks — each entry is a world snapshot taken before the paste
-    private final Map<UUID, Deque<Clipboard>> undoHistory = new HashMap<>();
-    private final Map<UUID, Deque<Clipboard>> redoHistory = new HashMap<>();
+    // Per-player undo/redo stacks — each entry is a snapshot (clipboard or changed blocks)
+    private final Map<UUID, Deque<UndoSnapshot>> undoHistory = new HashMap<>();
+    private final Map<UUID, Deque<UndoSnapshot>> redoHistory = new HashMap<>();
     private final Map<UUID, ActivePaste> activePastes = new HashMap<>();
     private static final int MAX_HISTORY = 5;
 
@@ -80,6 +80,34 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
     private record ChunkCoord(int x, int z) {}
     /** Snapshot of a placed block for cancel rollback. */
     private record ChangedBlock(int x, int y, int z, org.bukkit.block.data.BlockData oldData) {}
+
+    /** Undo snapshot containing either WorldEdit clipboard or changed blocks list. */
+    private static class UndoSnapshot {
+        private final Clipboard clipboard;  // null for large pastes
+        private final List<ChangedBlock> changedBlocks;  // null for small pastes
+        private final org.bukkit.World world;
+        private final BlockVector3 min;
+        private final BlockVector3 max;
+
+        private UndoSnapshot(Clipboard clipboard, BlockVector3 min, BlockVector3 max) {
+            this.clipboard = clipboard;
+            this.changedBlocks = null;
+            this.world = null;
+            this.min = min;
+            this.max = max;
+        }
+
+        private UndoSnapshot(List<ChangedBlock> changedBlocks, org.bukkit.World world, BlockVector3 min, BlockVector3 max) {
+            this.clipboard = null;
+            this.changedBlocks = new ArrayList<>(changedBlocks);  // defensive copy
+            this.world = world;
+            this.min = min;
+            this.max = max;
+        }
+
+        private boolean hasClipboard() { return clipboard != null; }
+        private boolean hasChangedBlocks() { return changedBlocks != null && !changedBlocks.isEmpty(); }
+    }
 
     private static class ActivePaste {
         private final org.bukkit.World world;
@@ -146,10 +174,13 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
         // Parse flags
         String name = null;
         boolean ignoreAir = false;
+        boolean preserveOrigin = false;
 
         for (String arg : args) {
             if (arg.equalsIgnoreCase("-a")) {
                 ignoreAir = true;
+            } else if (arg.equalsIgnoreCase("-o")) {
+                preserveOrigin = true;
             } else if (name == null) {
                 name = arg;
             }
@@ -179,6 +210,7 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
 
         final File finalFile = file;
         final boolean finalIgnoreAir = ignoreAir;
+        final boolean finalPreserveOrigin = preserveOrigin;
 
         // Read the file off the main thread
         plugin.getServer().getScheduler().runTaskAsynchronously(plugin, () -> {
@@ -186,7 +218,7 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                 Clipboard clipboard = reader.read();
                 // Paste back on the main thread (WorldEdit requires sync access)
                 plugin.getServer().getScheduler().runTask(plugin, () ->
-                        pasteClipboard(player, clipboard, finalFile.getName(), finalIgnoreAir));
+                        pasteClipboard(player, clipboard, finalFile.getName(), finalIgnoreAir, finalPreserveOrigin));
             } catch (Exception e) {
                 plugin.getServer().getScheduler().runTask(plugin, () ->
                         player.sendMessage("§cFailed to read schematic: §7" + e.getMessage()));
@@ -197,13 +229,13 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
-    private void pasteClipboard(Player player, Clipboard clipboard, String displayName, boolean ignoreAir) {
+    private void pasteClipboard(Player player, Clipboard clipboard, String displayName, boolean ignoreAir, boolean preserveOrigin) {
         org.bukkit.World bukkitWorld = player.getWorld();
         ActivePaste activePaste = new ActivePaste(bukkitWorld, displayName);
         activePastes.put(player.getUniqueId(), activePaste);
 
         World weWorld = BukkitAdapter.adapt(bukkitWorld);
-        int rotation = facingToRotation(player.getLocation().getYaw());
+        int rotation = preserveOrigin ? 0 : facingToRotation(player.getLocation().getYaw());
         BlockVector3 pasteOrigin = BukkitAdapter.asBlockVector(player.getLocation());
         BlockVector3 clipboardOrigin = clipboard.getOrigin();
         long schematicVolume = clipboard.getRegion().getVolume();
@@ -249,7 +281,7 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                 activePaste,
                 () -> {
                     player.sendMessage("§7Streaming paste start: up to §e" + schematicVolume + " §7source blocks.");
-                    streamPaste(player, bukkitWorld, clipboard, clipboardOrigin, pasteOrigin, rotation, ignoreAir, materialOnlyMode, snapshotRef, displayName, activePaste);
+                    streamPaste(player, bukkitWorld, clipboard, clipboardOrigin, pasteOrigin, rotation, ignoreAir, materialOnlyMode, snapshotRef, displayName, activePaste, wMin, wMax);
                 }
         );
     }
@@ -332,7 +364,9 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                              boolean materialOnlyMode,
                              Clipboard preSnapshot,
                              String displayName,
-                             ActivePaste activePaste) {
+                             ActivePaste activePaste,
+                             BlockVector3 wMin,
+                             BlockVector3 wMax) {
         final Iterator<BlockVector3> iterator = clipboard.getRegion().iterator();
         final long estimatedTotal = clipboard.getRegion().getVolume();
         final Clipboard snapshotRef = preSnapshot;
@@ -403,18 +437,30 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                     player.sendMessage("§aPasted §e" + displayName + " §a(" + placed + " blocks placed).");
                     if (rotation != 0) {
                         player.sendMessage("§7Rotated §e" + rotation + "° §7to match your facing direction.");
+                    } else if (rotation == 0) {
+                        player.sendMessage("§7Original block orientations preserved.");
                     }
+                    
+                    // Save undo snapshot (clipboard for small pastes, changed blocks for large pastes)
+                    UndoSnapshot undoSnapshot;
                     if (snapshotRef != null) {
+                        undoSnapshot = new UndoSnapshot(snapshotRef, wMin, wMax);
                         player.sendMessage("§7Use §e/pastecannon undo §7to reverse.");
-                        Deque<Clipboard> stack = undoHistory.computeIfAbsent(
+                    } else if (!activePaste.changedBlocks.isEmpty()) {
+                        undoSnapshot = new UndoSnapshot(activePaste.changedBlocks, bukkitWorld, wMin, wMax);
+                        player.sendMessage("§7Use §e/pastecannon undo §7to reverse (" + activePaste.changedBlocks.size() + " blocks tracked).");
+                    } else {
+                        undoSnapshot = null;
+                    }
+                    
+                    if (undoSnapshot != null) {
+                        Deque<UndoSnapshot> stack = undoHistory.computeIfAbsent(
                                 player.getUniqueId(), k -> new ArrayDeque<>());
-                        stack.push(snapshotRef);
+                        stack.push(undoSnapshot);
                         if (stack.size() > MAX_HISTORY) {
                             stack.pollLast();
                         }
                         redoHistory.remove(player.getUniqueId());
-                    } else {
-                        player.sendMessage("§eUndo unavailable for this large paste.");
                     }
                 }
             }
@@ -466,6 +512,35 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                 if (index < 0) {
                     cancel();
                     player.sendMessage("§aPaste rollback complete.");
+                }
+            }
+        }.runTaskTimer(plugin, 1L, 1L);
+    }
+    
+    /**
+     * Apply a list of changed blocks to the world in batches for undo/redo.
+     */
+    private void applyChangedBlocksBatched(Player player, org.bukkit.World world, List<ChangedBlock> changes, Runnable onComplete) {
+        new BukkitRunnable() {
+            int index = changes.size() - 1;
+
+            @Override
+            public void run() {
+                int applied = 0;
+                while (index >= 0 && applied < BLOCKS_PER_TICK) {
+                    ChangedBlock changedBlock = changes.get(index);
+                    try {
+                        world.getBlockAt(changedBlock.x(), changedBlock.y(), changedBlock.z())
+                                .setBlockData(changedBlock.oldData(), false);
+                    } catch (Exception ignored) {
+                    }
+                    index--;
+                    applied++;
+                }
+
+                if (index < 0) {
+                    cancel();
+                    onComplete.run();
                 }
             }
         }.runTaskTimer(plugin, 1L, 1L);
@@ -531,45 +606,102 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
     // =========================================================================
 
     private void undoLast(Player player) {
-        Deque<Clipboard> stack = undoHistory.get(player.getUniqueId());
+        Deque<UndoSnapshot> stack = undoHistory.get(player.getUniqueId());
         if (stack == null || stack.isEmpty()) {
             player.sendMessage("§cNothing to undo.");
             return;
         }
-        Clipboard snapshot = stack.pop();
-        World weWorld = BukkitAdapter.adapt(player.getWorld());
+        UndoSnapshot snapshot = stack.pop();
         org.bukkit.World bWorld = player.getWorld();
-        Clipboard currentState = captureRegion(weWorld, snapshot.getMinimumPoint(), snapshot.getMaximumPoint());
+        
         player.sendMessage("§7Applying undo...");
-        applySnapshotBatched(player, bWorld, snapshot, () -> {
-            player.sendMessage("§aUndo complete. §7Use §e/pastecannon redo §7to re-apply.");
-            if (currentState != null) {
-                Deque<Clipboard> redoStack = redoHistory.computeIfAbsent(player.getUniqueId(), k -> new ArrayDeque<>());
-                redoStack.push(currentState);
-                if (redoStack.size() > MAX_HISTORY) redoStack.pollLast();
+        
+        // Capture current state for redo
+        UndoSnapshot redoSnapshot;
+        if (snapshot.hasClipboard()) {
+            World weWorld = BukkitAdapter.adapt(bWorld);
+            Clipboard currentState = captureRegion(weWorld, snapshot.min, snapshot.max);
+            redoSnapshot = currentState != null ? new UndoSnapshot(currentState, snapshot.min, snapshot.max) : null;
+        } else if (snapshot.hasChangedBlocks()) {
+            // For changed blocks, capture current state of those blocks before reverting
+            List<ChangedBlock> currentBlocks = new ArrayList<>();
+            for (ChangedBlock cb : snapshot.changedBlocks) {
+                org.bukkit.block.Block block = snapshot.world.getBlockAt(cb.x(), cb.y(), cb.z());
+                currentBlocks.add(new ChangedBlock(cb.x(), cb.y(), cb.z(), block.getBlockData()));
             }
-        });
+            redoSnapshot = new UndoSnapshot(currentBlocks, snapshot.world, snapshot.min, snapshot.max);
+        } else {
+            redoSnapshot = null;
+        }
+        
+        // Apply the undo
+        if (snapshot.hasClipboard()) {
+            applySnapshotBatched(player, bWorld, snapshot.clipboard, () -> {
+                finishUndo(player, redoSnapshot);
+            });
+        } else if (snapshot.hasChangedBlocks()) {
+            applyChangedBlocksBatched(player, snapshot.world, snapshot.changedBlocks, () -> {
+                finishUndo(player, redoSnapshot);
+            });
+        }
+    }
+    
+    private void finishUndo(Player player, UndoSnapshot redoSnapshot) {
+        player.sendMessage("§aUndo complete. §7Use §e/pastecannon redo §7to re-apply.");
+        if (redoSnapshot != null) {
+            Deque<UndoSnapshot> redoStack = redoHistory.computeIfAbsent(player.getUniqueId(), k -> new ArrayDeque<>());
+            redoStack.push(redoSnapshot);
+            if (redoStack.size() > MAX_HISTORY) redoStack.pollLast();
+        }
     }
 
     private void redoLast(Player player) {
-        Deque<Clipboard> stack = redoHistory.get(player.getUniqueId());
+        Deque<UndoSnapshot> stack = redoHistory.get(player.getUniqueId());
         if (stack == null || stack.isEmpty()) {
             player.sendMessage("§cNothing to redo.");
             return;
         }
-        Clipboard snapshot = stack.pop();
-        World weWorld = BukkitAdapter.adapt(player.getWorld());
+        UndoSnapshot snapshot = stack.pop();
         org.bukkit.World bWorld = player.getWorld();
-        Clipboard currentState = captureRegion(weWorld, snapshot.getMinimumPoint(), snapshot.getMaximumPoint());
+        
         player.sendMessage("§7Applying redo...");
-        applySnapshotBatched(player, bWorld, snapshot, () -> {
-            player.sendMessage("§aRedo complete.");
-            if (currentState != null) {
-                Deque<Clipboard> undoStack = undoHistory.computeIfAbsent(player.getUniqueId(), k -> new ArrayDeque<>());
-                undoStack.push(currentState);
-                if (undoStack.size() > MAX_HISTORY) undoStack.pollLast();
+        
+        // Capture current state for undo
+        UndoSnapshot undoSnapshot;
+        if (snapshot.hasClipboard()) {
+            World weWorld = BukkitAdapter.adapt(bWorld);
+            Clipboard currentState = captureRegion(weWorld, snapshot.min, snapshot.max);
+            undoSnapshot = currentState != null ? new UndoSnapshot(currentState, snapshot.min, snapshot.max) : null;
+        } else if (snapshot.hasChangedBlocks()) {
+            List<ChangedBlock> currentBlocks = new ArrayList<>();
+            for (ChangedBlock cb : snapshot.changedBlocks) {
+                org.bukkit.block.Block block = snapshot.world.getBlockAt(cb.x(), cb.y(), cb.z());
+                currentBlocks.add(new ChangedBlock(cb.x(), cb.y(), cb.z(), block.getBlockData()));
             }
-        });
+            undoSnapshot = new UndoSnapshot(currentBlocks, snapshot.world, snapshot.min, snapshot.max);
+        } else {
+            undoSnapshot = null;
+        }
+        
+        // Apply the redo
+        if (snapshot.hasClipboard()) {
+            applySnapshotBatched(player, bWorld, snapshot.clipboard, () -> {
+                finishRedo(player, undoSnapshot);
+            });
+        } else if (snapshot.hasChangedBlocks()) {
+            applyChangedBlocksBatched(player, snapshot.world, snapshot.changedBlocks, () -> {
+                finishRedo(player, undoSnapshot);
+            });
+        }
+    }
+    
+    private void finishRedo(Player player, UndoSnapshot undoSnapshot) {
+        player.sendMessage("§aRedo complete.");
+        if (undoSnapshot != null) {
+            Deque<UndoSnapshot> undoStack = undoHistory.computeIfAbsent(player.getUniqueId(), k -> new ArrayDeque<>());
+            undoStack.push(undoSnapshot);
+            if (undoStack.size() > MAX_HISTORY) undoStack.pollLast();
+        }
     }
 
     // =========================================================================
@@ -688,12 +820,14 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
                                     .append(Component.newline())
                                     .append(Component.text("Add ", NamedTextColor.GRAY))
                                     .append(Component.text("-a ", NamedTextColor.YELLOW))
-                                    .append(Component.text("to ignore air", NamedTextColor.GRAY))
+                                    .append(Component.text("to ignore air, ", NamedTextColor.GRAY))
+                                    .append(Component.text("-o ", NamedTextColor.YELLOW))
+                                    .append(Component.text("to preserve orientations", NamedTextColor.GRAY))
                     ));
             player.sendMessage(entry);
         }
 
-        player.sendMessage("§7Usage: §e/pastecannon <name> §8[§e-a §8= ignore air]");
+        player.sendMessage("§7Usage: §e/pastecannon <name> §8[§e-a §8= ignore air] [§e-o §8= preserve orientations]");
         player.sendMessage("§7       §e/pastecannon undo §8| §e/pastecannon redo §8| §e/pastecannon cancel");
     }
 
@@ -746,11 +880,21 @@ public class PasteCannonCommand implements CommandExecutor, TabCompleter {
             options.removeIf(s -> !s.toLowerCase().startsWith(partial));
             return options;
         }
-        if (args.length == 2 && !Arrays.asList(args).contains("-a")
-                && !args[0].equalsIgnoreCase("undo")
+        if (args.length == 2 && !args[0].equalsIgnoreCase("undo")
                 && !args[0].equalsIgnoreCase("redo")
                 && !args[0].equalsIgnoreCase("cancel")) {
-            return List.of("-a");
+            List<String> flags = new ArrayList<>();
+            if (!Arrays.asList(args).contains("-a")) flags.add("-a");
+            if (!Arrays.asList(args).contains("-o")) flags.add("-o");
+            return flags;
+        }
+        if (args.length == 3 && !args[0].equalsIgnoreCase("undo")
+                && !args[0].equalsIgnoreCase("redo")
+                && !args[0].equalsIgnoreCase("cancel")) {
+            List<String> flags = new ArrayList<>();
+            if (!Arrays.asList(args).contains("-a")) flags.add("-a");
+            if (!Arrays.asList(args).contains("-o")) flags.add("-o");
+            return flags;
         }
         return List.of();
     }
