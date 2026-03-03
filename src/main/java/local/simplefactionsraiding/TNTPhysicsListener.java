@@ -97,7 +97,7 @@ public class TNTPhysicsListener implements Listener {
             String n = m.name();
             if (n.endsWith("_SLAB")
                     || n.endsWith("_TRAPDOOR")
-                    || n.endsWith("_FENCE")       // oak_fence, nether_brick_fence …
+                    || n.endsWith("_FENCE")       // oak_fence, nether_brick_fence â€¦
                     || n.endsWith("_FENCE_GATE")
                     || n.endsWith("_WALL")
                     || n.endsWith("_STAIRS")
@@ -129,34 +129,34 @@ public class TNTPhysicsListener implements Listener {
      *
      * These represent the approximate material density within the bounding box:
      *   - A bottom slab is 50 % of the bounding-box volume, so weight = 0.5
-     *   - A trapdoor only occupies 3/16 of its block → weight ≈ 0.19
-     *   - A ladder is solid rungs across its blocking axis → weight = 0.9
-     *   - Iron bars are very thin → weight = 0.3
+     *   - A trapdoor only occupies 3/16 of its block â†’ weight â‰ˆ 0.19
+     *   - A ladder is solid rungs across its blocking axis â†’ weight = 0.9
+     *   - Iron bars are very thin â†’ weight = 0.3
      * For blocks not explicitly listed the fallback is 0.5.
      */
     private static final Map<Material, Double> BLOCK_EXPOSURE_WEIGHT = buildExposureWeights();
 
     private static Map<Material, Double> buildExposureWeights() {
         Map<Material, Double> map = new EnumMap<>(Material.class);
-        // Ladders – dense rungs on the blocking axis
+        // Ladders â€“ dense rungs on the blocking axis
         map.put(Material.LADDER,            0.90);
-        // Iron bars / glass panes – thin vertical elements
+        // Iron bars / glass panes â€“ thin vertical elements
         map.put(Material.IRON_BARS,         0.30);
         map.put(Material.GLASS_PANE,        0.20);
-        // Chain – thin links
+        // Chain â€“ thin links
         { Material chain = Material.getMaterial("CHAIN"); if (chain != null) map.put(chain, 0.25); }
-        // End rod – very thin pole
+        // End rod â€“ very thin pole
         map.put(Material.END_ROD,           0.12);
-        // Enchanting table – chunky centre block
+        // Enchanting table â€“ chunky centre block
         map.put(Material.ENCHANTING_TABLE,  0.75);
-        // Brewing stand – thin rods
+        // Brewing stand â€“ thin rods
         map.put(Material.BREWING_STAND,     0.20);
         // Conduit / bell / lanterns
         map.put(Material.CONDUIT,           0.55);
         map.put(Material.LANTERN,           0.40);
         map.put(Material.SOUL_LANTERN,      0.40);
         map.put(Material.BELL,              0.60);
-        // Suffix-matched types — fill in by scanning all materials
+        // Suffix-matched types â€” fill in by scanning all materials
         for (Material m : Material.values()) {
             String n = m.name();
             if (map.containsKey(m)) continue;
@@ -189,9 +189,9 @@ public class TNTPhysicsListener implements Listener {
     /**
      * Tracks the velocity we set for each TNT entity at the end of the previous
      * tick. Used to recompute air physics in water: vanilla applies water drag
-     * (0.8×) and buoyancy before our handler runs, so we can't trust the value
+     * (0.8Ã—) and buoyancy before our handler runs, so we can't trust the value
      * returned by getVelocity() when the entity is submerged.  By keeping our
-     * own record we can apply the correct air formula (×0.98, −0.04 Y) both for
+     * own record we can apply the correct air formula (Ã—0.98, âˆ’0.04 Y) both for
      * slow (stationary) and fast (explosion-launched) TNT that passes through water.
      */
     private final Map<UUID, Vector> prevVel = new HashMap<>();
@@ -205,6 +205,26 @@ public class TNTPhysicsListener implements Listener {
      * same game tick as tickAllTNT but AFTER prevVel was already set to near-zero.
      */
     private final Set<UUID> launchedTNT = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Canonical 3-D position {x, y, z} for water-locked TNT (not explosion-launched).
+     * Vanilla water current displaces X/Z and buoyancy shifts Y every tick; we
+     * teleport back to this saved position at the start of each tick, advancing Y
+     * ourselves using the air-gravity formula.  Entries are created on the first tick
+     * the TNT is pinned in water and removed when it becomes explosion-launched or
+     * is destroyed.
+     */
+    private final Map<UUID, double[]> pinnedPos = new HashMap<>();
+
+    /**
+     * Clean 3-D position {x, y, z} for explosion-launched TNT travelling through water.
+     * Vanilla water physics corrupt both position (current + buoyancy) and velocity
+     * (0.8Ã— drag) while the TNT is submerged.  We maintain our own position record
+     * and advance it with air physics each tick, teleporting the entity there so
+     * water has no effect on the trajectory.  Cleared when the TNT leaves water or
+     * its horizontal speed decays below {@link #LAUNCH_CLEAR_SPEED_SQ}.
+     */
+    private final Map<UUID, double[]> launchedPos = new HashMap<>();
 
     /**
      * When true, TNT explosions are cancelled before they fire particles/sounds.
@@ -253,6 +273,9 @@ public class TNTPhysicsListener implements Listener {
             Entity e = plugin.getServer().getEntity(uuid);
             if (e == null || !e.isValid()) {
                 prevVel.remove(uuid);
+                launchedTNT.remove(uuid);
+                pinnedPos.remove(uuid);
+                launchedPos.remove(uuid);
                 return true; // remove stale
             }
             tickOneTNT((TNTPrimed) e);
@@ -264,17 +287,17 @@ public class TNTPhysicsListener implements Listener {
         UUID uuid = tnt.getUniqueId();
         // What vanilla actually set this tick (may be water-corrupted).
         Vector actualVel = tnt.getVelocity();
-        // What WE set last tick — the clean baseline for air-physics calculations.
+        // What WE set last tick â€” the clean baseline for air-physics calculations.
         Vector prev = prevVel.getOrDefault(uuid, new Vector(0, 0, 0));
 
-        boolean inWater = isInWater(tnt.getLocation().getBlock());
+        boolean inWater = isTNTTouchingWater(tnt);
 
         // ----------------------------------------------------------------
         // Explosion-launch detection
         // ----------------------------------------------------------------
         // We check TWO conditions with OR:
-        //   a) prevHSq: we set a high horizontal velocity last tick → still coasting
-        //   b) diffHSq: actual velocity differs significantly from our baseline →
+        //   a) prevHSq: we set a high horizontal velocity last tick â†’ still coasting
+        //   b) diffHSq: actual velocity differs significantly from our baseline â†’
         //      an explosion pushed this TNT THIS tick before our handler ran.
         //      Water currents are weak (~0.04-0.07/tick) so the threshold cleanly
         //      separates water drift from real blast forces.
@@ -283,52 +306,116 @@ public class TNTPhysicsListener implements Listener {
         double diffZ   = actualVel.getZ() - prev.getZ();
         double diffHSq = diffX * diffX + diffZ * diffZ;
 
-        boolean launchedByExplosion = prevHSq >= PARTIAL_SPEED_THRESHOLD_SQ
+        // Also consult the persistent launchedTNT set: once a TNT has been
+        // explosion-launched it stays in "launched" mode until horizontal speed
+        // truly decays to near-zero, even if vanilla drag or exposure attenuation
+        // temporarily brings prevHSq below the detection threshold.
+        boolean launchedByExplosion = launchedTNT.contains(uuid)
+                                   || prevHSq >= PARTIAL_SPEED_THRESHOLD_SQ
                                    || diffHSq >= PARTIAL_SPEED_THRESHOLD_SQ * 0.5;
 
         double nx, ny, nz;
+        // For launched-in-water TNT, stores the clean air-trajectory velocity so
+        // prevVel tracks air physics (not the water-drag-compensated set value).
+        Vector airVelOverride = null;
 
         if (launchedByExplosion) {
-            // Choose the best velocity baseline:
-            //   - If explosion just hit (diffHSq large), actualVel is the raw blast → use it.
-            //   - If coasting from prior tick (prevHSq large), prev is our clean value → replay air physics.
-            boolean explosionThisTick = diffHSq >= PARTIAL_SPEED_THRESHOLD_SQ * 0.5;
+            // Detect the very first explosion tick BEFORE adding to launchedTNT.
+            boolean firstExplosionTick = !launchedTNT.contains(uuid);
+
+            // Mark as launched so future ticks retain launch state even if
+            // exposure attenuation or drag brought prevHSq below the threshold.
+            launchedTNT.add(uuid);
+            // Remove from pinned-position tracking - TNT is now free-flying.
+            pinnedPos.remove(uuid);
+            launchedPos.remove(uuid);
+
             if (inWater) {
-                // Replay air physics on whichever baseline has more horizontal energy.
-                Vector base = explosionThisTick ? actualVel : prev;
-                nx = base.getX() * 0.98;
-                ny = (base.getY() - 0.04) * 0.98;
-                nz = base.getZ() * 0.98;
+                // Launched TNT in water: fly as if no water exists.
+                //
+                // Minecraft tick order each game tick:
+                //   1. gravity applied to stored velocity:  vel.Y -= 0.04
+                //   2. entity MOVES by that velocity        (position changes here)
+                //   3. water drag applied to stored vel:    vel *= 0.8, vel.Y += 0.04
+                //
+                // Step 2 uses exactly the velocity we SET, so setting vel = airVel
+                // makes the entity move identically to being in air.  Step 3 only
+                // corrupts the stored velocity - we ignore actualVel for this path
+                // and recompute airVel ourselves each tick.
+                //
+                // airVel chain (tracked in prevVel via airVelOverride):
+                //   first tick  -> undo water drag on actualVel to recover blast vel,
+                //                  then advance one air step (drag 0.98, grav 0.04 Y)
+                //   every other -> advance prev airVel one air step
+                double ax, ay, az;
+                if (firstExplosionTick) {
+                    // actualVel = blast velocity after ONE round of water drag:
+                    //   actualVel.X = blast.X * 0.8
+                    //   actualVel.Y = (blast.Y - 0.04) * 0.8 + 0.04
+                    // Undo drag to recover blast, then advance one air step.
+                    double bx = actualVel.getX() / 0.8;
+                    double by = (actualVel.getY() - 0.04) / 0.8 + 0.04;
+                    double bz = actualVel.getZ() / 0.8;
+                    ax = bx * 0.98;
+                    ay = (by - 0.04) * 0.98;
+                    az = bz * 0.98;
+                } else {
+                    // Coasting: advance our tracked air trajectory by one step.
+                    ax = prev.getX() * 0.98;
+                    ay = (prev.getY() - 0.04) * 0.98;
+                    az = prev.getZ() * 0.98;
+                }
+                // Set directly - entity moves by (ax, ax-0.04, az) just like in air.
+                // Water drag after movement is harmless because we override every tick.
+                nx = ax;
+                ny = ay;
+                nz = az;
+                airVelOverride = new Vector(ax, ay, az);
             } else {
-                // In air — vanilla air physics are correct, trust them.
+                // In air - vanilla air physics are correct, trust them.
                 nx = actualVel.getX();
                 ny = actualVel.getY();
                 nz = actualVel.getZ();
             }
         } else {
-            // Not explosion-launched: pin X and Z to zero.
+            // Not explosion-launched: pin X, Y, Z absolutely in water.
             nx = 0;
             nz = 0;
 
             if (inWater) {
-                // Vanilla has already moved the entity by actualVel this tick.
-                // Undo any X/Z position drift introduced by the water current.
-                double wx = actualVel.getX();
-                double wz = actualVel.getZ();
-                if (Math.abs(wx) > 0.002 || Math.abs(wz) > 0.002) {
-                    Location loc = tnt.getLocation();
-                    tnt.teleport(loc.clone().subtract(wx, 0, wz));
-                }
+                // â”€â”€ Stationary TNT in water (cannon pot) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                // Vanilla applies buoyancy (Y up) + water current (X/Z drift) and
+                // moves the entity every tick before our handler runs.  We override
+                // ALL three axes by maintaining a pinned 3-D position and teleporting
+                // the entity back to it (advancing Y ourselves with air gravity).
 
-                // Override water buoyancy/drag with vanilla air-gravity formula.
-                double candidateY = (prev.getY() - 0.04) * 0.98;
-                // Cap at zero if resting on a solid surface so we don't bounce.
-                if (candidateY < 0 && isSolidBelow(tnt)) {
-                    candidateY = 0;
+                // â”€â”€ Velocity trick: cancel buoyancy without teleporting in Y â”€â”€â”€â”€â”€â”€
+                // Vanilla water physics apply: velocity *= 0.8, then Y += 0.04 (buoyancy).
+                // Setting ny = -0.05 causes: -0.05 * 0.8 + 0.04 = 0.00 â†’ zero Y movement.
+                // The entity is frozen in Y by velocity, not by teleport â€” no client jitter.
+                ny = -0.05;
+
+                double[] saved = pinnedPos.get(uuid);
+                Location curLoc = tnt.getLocation();
+
+                if (saved != null) {
+                    // Teleport X/Z back to the pinned position if water current has
+                    // drifted the entity.  In source-water pots the drift is zero;
+                    // in flowing-water tubes this corrects horizontal current each tick.
+                    double driftX = Math.abs(curLoc.getX() - saved[0]);
+                    double driftZ = Math.abs(curLoc.getZ() - saved[2]);
+                    if (driftX > 0.001 || driftZ > 0.001) {
+                        tnt.teleport(new Location(tnt.getWorld(),
+                                saved[0], curLoc.getY(), saved[2],
+                                curLoc.getYaw(), curLoc.getPitch()));
+                    }
+                    // Y is managed by the ny = -0.05 velocity; do NOT advance saved[1].
+                } else {
+                    // First tick in water: save current position.
+                    pinnedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
                 }
-                ny = candidateY;
             } else {
-                // In air — vanilla handles Y correctly (gravity + collision response).
+                // In air â€” vanilla handles Y correctly (gravity + collision response).
                 ny = actualVel.getY();
 
                 // Partial block collision for slow, non-launched TNT in air.
@@ -342,7 +429,17 @@ public class TNTPhysicsListener implements Listener {
         }
 
         Vector newVel = new Vector(nx, ny, nz);
-        prevVel.put(uuid, newVel);
+
+        // Clear launch state once horizontal speed has truly decayed to near-zero.
+        double newHSq = nx * nx + nz * nz;
+        if (newHSq < LAUNCH_CLEAR_SPEED_SQ) {
+            launchedTNT.remove(uuid);
+            launchedPos.remove(uuid);
+        }
+
+        // For launched-in-water TNT, store the clean air-trajectory velocity so
+        // the next tick's physics chain is based on correct air kinematics.
+        prevVel.put(uuid, airVelOverride != null ? airVelOverride : newVel);
         tnt.setVelocity(newVel);
     }
 
@@ -352,10 +449,114 @@ public class TNTPhysicsListener implements Listener {
         return below.getType().isSolid();
     }
 
+    /**
+     * Sweeps from (sx, sy, sz) to (ex, ey, ez) in fine steps, checking at each
+     * point whether a TNT-sized AABB intersects a solid or partial block.
+     *
+     * Returns the last clear sample point before the first collision;
+     * if no obstacles are found, returns {ex, ey, ez}.
+     *
+     * Step resolution: â‰¥8 steps per block of distance so TNT travelling at up
+     * to 3 b/t is sampled at â‰¤0.375 b/step â€” a single slab or fence cannot be
+     * tunnelled through.
+     */
+    private double[] sweepPath(World world,
+                               double sx, double sy, double sz,
+                               double ex, double ey, double ez) {
+        double dx = ex - sx;
+        double dy = ey - sy;
+        double dz = ez - sz;
+        double distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq < 1e-8) return new double[]{ex, ey, ez};
+
+        double dist = Math.sqrt(distSq);
+        int steps = Math.max(4, (int) Math.ceil(dist * 8)); // â‰¥8 checks per block
+        double stepX = dx / steps;
+        double stepY = dy / steps;
+        double stepZ = dz / steps;
+
+        double lastX = sx, lastY = sy, lastZ = sz;
+        for (int i = 1; i <= steps; i++) {
+            double cx = sx + stepX * i;
+            double cy = sy + stepY * i;
+            double cz = sz + stepZ * i;
+            if (isPositionBlocked(world, cx, cy, cz)) {
+                return new double[]{lastX, lastY, lastZ};
+            }
+            lastX = cx;
+            lastY = cy;
+            lastZ = cz;
+        }
+        return new double[]{ex, ey, ez};
+    }
+
+    /**
+     * Returns true if a TNT-sized AABB (0.98 Ã— 0.98 Ã— 0.98) centred at
+     * (cx, cy, cz) overlaps any full solid block or any partial block (slab,
+     * fence, wall, trapdoor, etc.) whose actual bounding box intersects the AABB.
+     *
+     * Water blocks are NOT solid so they are transparently passed through,
+     * which is correct â€” cannon pots are water-filled.
+     */
+    private boolean isPositionBlocked(World world, double cx, double cy, double cz) {
+        final double HALF = 0.49;
+        BoundingBox tntBB = new BoundingBox(
+                cx - HALF, cy - HALF, cz - HALF,
+                cx + HALF, cy + HALF, cz + HALF);
+        int minX = (int) Math.floor(cx - HALF);
+        int maxX = (int) Math.floor(cx + HALF);
+        int minY = (int) Math.floor(cy - HALF);
+        int maxY = (int) Math.floor(cy + HALF);
+        int minZ = (int) Math.floor(cz - HALF);
+        int maxZ = (int) Math.floor(cz + HALF);
+        for (int bx = minX; bx <= maxX; bx++) {
+            for (int by = minY; by <= maxY; by++) {
+                for (int bz = minZ; bz <= maxZ; bz++) {
+                    Block block = world.getBlockAt(bx, by, bz);
+                    Material m = block.getType();
+                    if (m.isAir() || m == Material.WATER || m == Material.LAVA) continue;
+                    if (PARTIAL_MATERIALS.contains(m)) {
+                        BoundingBox blockBB = block.getBoundingBox();
+                        if (blockBB.getVolume() > 1e-6 && tntBB.overlaps(blockBB)) return true;
+                    } else if (m.isSolid()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean isInWater(Block block) {
         if (block.getType() == Material.WATER) return true;
         if (block.getBlockData() instanceof org.bukkit.block.data.Waterlogged wl) {
             return wl.isWaterlogged();
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if any block overlapped by the TNT entity's bounding box
+     * (expanded by 0.4 blocks on all sides) contains water.
+     * The expansion ensures TNT exploding at a dry ladder block immediately
+     * adjacent to water still triggers the water-protection check.
+     */
+    private boolean isTNTTouchingWater(TNTPrimed tnt) {
+        final double MARGIN = 0.4;
+        BoundingBox bb = tnt.getBoundingBox();
+        int minX = (int) Math.floor(bb.getMinX() - MARGIN);
+        int maxX = (int) Math.floor(bb.getMaxX() + MARGIN);
+        int minY = (int) Math.floor(bb.getMinY() - MARGIN);
+        int maxY = (int) Math.floor(bb.getMaxY() + MARGIN);
+        int minZ = (int) Math.floor(bb.getMinZ() - MARGIN);
+        int maxZ = (int) Math.floor(bb.getMaxZ() + MARGIN);
+        World world = tnt.getWorld();
+        for (int bx = minX; bx <= maxX; bx++) {
+            for (int by = minY; by <= maxY; by++) {
+                for (int bz = minZ; bz <= maxZ; bz++) {
+                    if (isInWater(world.getBlockAt(bx, by, bz))) return true;
+                }
+            }
         }
         return false;
     }
@@ -418,11 +619,11 @@ public class TNTPhysicsListener implements Listener {
 
                     if (block.getType() == Material.LADDER) {
                         // Ladders are wall-mounted: only block the single axis perpendicular
-                        // to their attachment wall.  Y is never blocked — TNT falling down past
+                        // to their attachment wall.  Y is never blocked â€” TNT falling down past
                         // (or onto) a ladder must not be caught by it from above.
                         // getFacing() returns the direction AWAY from the wall (into the room):
-                        //   EAST/WEST facing  → attached to west/east  wall → blocks X axis
-                        //   NORTH/SOUTH facing → attached to south/north wall → blocks Z axis
+                        //   EAST/WEST facing  â†’ attached to west/east  wall â†’ blocks X axis
+                        //   NORTH/SOUTH facing â†’ attached to south/north wall â†’ blocks Z axis
                         BlockFace ladderFacing = ((Directional) block.getBlockData()).getFacing();
                         boolean ladderBlocksX = ladderFacing == BlockFace.EAST
                                 || ladderFacing == BlockFace.WEST;
@@ -441,7 +642,7 @@ public class TNTPhysicsListener implements Listener {
                                 if (testZ.overlaps(blockBB)) out.setZ(0);
                             }
                         }
-                        continue; // never check Y — ladders cannot catch TNT from above
+                        continue; // never check Y â€” ladders cannot catch TNT from above
                     }
 
                     // X axis
@@ -509,7 +710,7 @@ public class TNTPhysicsListener implements Listener {
     /**
      * If a TNTPrimed entity is located inside a water block (or a waterlogged block)
      * when it explodes, clear the block break list entirely.  The explosion still
-     * fires — entity damage and velocity applied to nearby TNT are unaffected — but
+     * fires â€” entity damage and velocity applied to nearby TNT are unaffected â€” but
      * no blocks are destroyed.
      *
      * This covers the ladder-adjacent-to-water case: the TNT occupies the water
@@ -524,16 +725,70 @@ public class TNTPhysicsListener implements Listener {
     public void onTNTExplodeInWater(EntityExplodeEvent event) {
         if (!(event.getEntity() instanceof TNTPrimed tnt)) return;
 
-        // Always clean up tracking when TNT explodes
         UUID eid = tnt.getUniqueId();
+
+        // â”€â”€ Water check BEFORE cleanup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // For launched TNT we teleport the entity to a clean air-trajectory
+        // position each tick, so the entity's current bounding box is NOT in
+        // water even when the true detonation point is.  We therefore check
+        // water using several sources in order of reliability:
+        //
+        //  1. launchedPos entry still present â†’ TNT was travelling through water
+        //     on this tick (launchedPos is cleared when TNT leaves water to air).
+        //  2. pinnedPos entry still present   â†’ TNT was pinned in a water pot.
+        //  3. Bounding-box + margin check on the entity's current position
+        //     (covers normal, non-teleported TNT).
+        //  4. Radius check around the event location (fallback for edge cases).
+
+        boolean wasInWater = false;
+
+        double[] lp = launchedPos.get(eid);
+        if (lp != null) {
+            // The saved launch position IS the real water position.
+            // Check water at that location with margin.
+            wasInWater = isLocationNearWater(tnt.getWorld(), lp[0], lp[1], lp[2], 0.5);
+        }
+
+        if (!wasInWater && pinnedPos.containsKey(eid)) {
+            wasInWater = true; // pinned in water pot â€” always suppressed
+        }
+
+        if (!wasInWater) {
+            wasInWater = isTNTTouchingWater(tnt);
+        }
+
+        if (!wasInWater) {
+            Location eloc = event.getLocation();
+            wasInWater = isLocationNearWater(eloc.getWorld(), eloc.getX(), eloc.getY(), eloc.getZ(), 0.5);
+        }
+
+        // Now do cleanup
         trackedTNT.remove(eid);
         prevVel.remove(eid);
         launchedTNT.remove(eid);
+        pinnedPos.remove(eid);
+        launchedPos.remove(eid);
 
-        Block tntBlock = event.getLocation().getBlock();
-        if (isInWater(tntBlock)) {
+        if (wasInWater) {
             event.blockList().clear();
         }
+    }
+
+    /**
+     * Returns true if any block within {@code radius} blocks of (x, y, z) is water.
+     */
+    private boolean isLocationNearWater(World world, double x, double y, double z, double radius) {
+        int minX = (int) Math.floor(x - radius);
+        int maxX = (int) Math.floor(x + radius);
+        int minY = (int) Math.floor(y - radius);
+        int maxY = (int) Math.floor(y + radius);
+        int minZ = (int) Math.floor(z - radius);
+        int maxZ = (int) Math.floor(z + radius);
+        for (int bx = minX; bx <= maxX; bx++)
+            for (int by = minY; by <= maxY; by++)
+                for (int bz = minZ; bz <= maxZ; bz++)
+                    if (isInWater(world.getBlockAt(bx, by, bz))) return true;
+        return false;
     }
 
     // -----------------------------------------------------------------------
@@ -578,7 +833,7 @@ public class TNTPhysicsListener implements Listener {
                 Vector preVel  = entry.getValue();
                 // Read the velocity that is currently on the entity.  Our tick handler
                 // may have already run this tick and set a clean air-physics value;
-                // that is fine — we still want to apply the exposure attenuation.
+                // that is fine â€” we still want to apply the exposure attenuation.
                 Vector postVel = tnt.getVelocity();
                 Vector delta   = postVel.clone().subtract(preVel);
 
