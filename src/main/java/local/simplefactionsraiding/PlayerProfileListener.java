@@ -100,6 +100,14 @@ public class PlayerProfileListener implements Listener {
 
     private void initializeOnJoin(Player player) {
         ProfileType current = worldToProfile(player.getWorld().getName());
+
+        if (current != ProfileType.HUB) {
+            boolean teleportedToHub = multiWorldManager.teleportToHub(player);
+            if (teleportedToHub) {
+                current = ProfileType.HUB;
+            }
+        }
+
         if (current == ProfileType.OTHER) {
             return;
         }

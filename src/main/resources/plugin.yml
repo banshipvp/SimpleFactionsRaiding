@@ -4,12 +4,12 @@ api-version: "1.13"
 api: bukkit
 main: local.simplefactionsraiding.SimpleFactionsRaidingPlugin
 description: Raiding mechanics for SimpleFactions with custom TNT and core chunk system
-depend:
-  - SimpleFactions
 authors:
   - Development Team
 
+depend:
 softdepend:
+  - SimpleFactions
   - WorldEdit
 
 commands:

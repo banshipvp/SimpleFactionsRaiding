@@ -36,6 +36,9 @@ public class CustomExplosiveListener implements Listener {
 
     private static final String BLOCK_META_KEY = "sfr_custom_tnt_type";
     private static final long PRIME_MATCH_TTL_MS = 1500L;
+    private static final double LETHAL_PROJECTION_RADIUS = 8.0;
+    private static final double LETHAL_PROJECTION_MULTIPLIER = 1.8;
+    private static final double LETHAL_MIN_HORIZONTAL_SPEED = 1.10;
 
     private final SimpleFactionsRaidingPlugin plugin;
     private final CustomTNTManager customTNTManager;
@@ -189,6 +192,10 @@ public class CustomExplosiveListener implements Listener {
             amplifyBlockDamage(event, tntType, creeperType);
         }
 
+        if (tntType == CustomTNTManager.CustomTNTType.LETHAL) {
+            amplifyLethalTntProjection(event);
+        }
+
         double spawnerDropChance = 0.50;
         if (tntType != null) {
             spawnerDropChance = customTNTManager.getSpawnerDropChance(tntType);
@@ -197,6 +204,63 @@ public class CustomExplosiveListener implements Listener {
         }
 
         processSpawnerDrops(event, spawnerDropChance);
+    }
+
+    private void amplifyLethalTntProjection(EntityExplodeEvent event) {
+        Location center = event.getLocation();
+        if (center.getWorld() == null) {
+            return;
+        }
+
+        Map<TNTPrimed, Vector> preExplosionVelocities = new HashMap<>();
+        for (Entity nearby : center.getNearbyEntities(
+                LETHAL_PROJECTION_RADIUS,
+                LETHAL_PROJECTION_RADIUS,
+                LETHAL_PROJECTION_RADIUS)) {
+            if (!(nearby instanceof TNTPrimed primed)) {
+                continue;
+            }
+            if (!primed.isValid()) {
+                continue;
+            }
+            if (primed.getUniqueId().equals(event.getEntity().getUniqueId())) {
+                continue;
+            }
+            preExplosionVelocities.put(primed, primed.getVelocity().clone());
+        }
+
+        if (preExplosionVelocities.isEmpty()) {
+            return;
+        }
+
+        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+            for (Map.Entry<TNTPrimed, Vector> entry : preExplosionVelocities.entrySet()) {
+                TNTPrimed primed = entry.getKey();
+                if (!primed.isValid()) {
+                    continue;
+                }
+
+                Vector before = entry.getValue();
+                Vector after = primed.getVelocity();
+                Vector explosionDelta = after.clone().subtract(before);
+
+                if (explosionDelta.lengthSquared() < 1.0e-4) {
+                    continue;
+                }
+
+                Vector boostedDelta = explosionDelta.clone().multiply(LETHAL_PROJECTION_MULTIPLIER);
+                Vector boostedVelocity = before.clone().add(boostedDelta);
+
+                double horizontal = Math.hypot(boostedVelocity.getX(), boostedVelocity.getZ());
+                if (horizontal > 1.0e-6 && horizontal < LETHAL_MIN_HORIZONTAL_SPEED) {
+                    double scale = LETHAL_MIN_HORIZONTAL_SPEED / horizontal;
+                    boostedVelocity.setX(boostedVelocity.getX() * scale);
+                    boostedVelocity.setZ(boostedVelocity.getZ() * scale);
+                }
+
+                primed.setVelocity(boostedVelocity);
+            }
+        }, 1L);
     }
 
     private void amplifyBlockDamage(EntityExplodeEvent event,

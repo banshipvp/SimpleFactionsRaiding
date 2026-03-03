@@ -23,6 +23,11 @@ repositories {
         name = "enginehub"
         url = "https://maven.enginehub.org/repo/"
     }
+
+    maven {
+        name = "dmulloy2-repo"
+        url = "https://repo.dmulloy2.net/repository/public/"
+    }
 }
 
 dependencies {

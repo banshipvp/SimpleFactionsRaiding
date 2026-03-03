@@ -15,6 +15,7 @@ import java.util.List;
 public class HubCommand implements CommandExecutor {
 
     public static final String COMPASS_NAME = "§b§lServer Selector";
+    private static final int HOTBAR_CENTER_SLOT = 4;
 
     private final SimpleFactionsRaidingPlugin plugin;
     private final MultiWorldManager multiWorldManager;
@@ -47,9 +48,16 @@ public class HubCommand implements CommandExecutor {
     }
 
     public void giveSelectorCompass(Player player) {
-        if (hasSelectorCompass(player)) {
-            return;
+        ItemStack[] contents = player.getInventory().getContents();
+        for (int i = 0; i < contents.length; i++) {
+            if (isSelectorCompass(contents[i])) {
+                contents[i] = null;
+            }
         }
+        if (isSelectorCompass(player.getInventory().getItemInOffHand())) {
+            player.getInventory().setItemInOffHand(null);
+        }
+        player.getInventory().setContents(contents);
 
         ItemStack compass = new ItemStack(Material.COMPASS, 1);
         ItemMeta meta = compass.getItemMeta();
@@ -60,8 +68,14 @@ public class HubCommand implements CommandExecutor {
             compass.setItemMeta(meta);
         }
 
-        player.getInventory().addItem(compass).values().forEach(leftover ->
-                player.getWorld().dropItemNaturally(player.getLocation(), leftover));
+        ItemStack previousCenterItem = player.getInventory().getItem(HOTBAR_CENTER_SLOT);
+        if (previousCenterItem != null) {
+            player.getInventory().addItem(previousCenterItem).values().forEach(leftover ->
+                    player.getWorld().dropItemNaturally(player.getLocation(), leftover));
+        }
+
+        player.getInventory().setItem(HOTBAR_CENTER_SLOT, compass);
+        player.getInventory().setHeldItemSlot(HOTBAR_CENTER_SLOT);
     }
 
     public boolean isSelectorCompass(ItemStack item) {

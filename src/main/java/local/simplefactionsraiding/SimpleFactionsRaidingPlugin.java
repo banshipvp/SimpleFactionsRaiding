@@ -53,7 +53,8 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new RaidListener(this, raidingManager, customTNTManager, coreChunkManager), this);
         getServer().getPluginManager().registerEvents(new CustomExplosiveListener(this, customTNTManager), this);
         getServer().getPluginManager().registerEvents(new DispenserTNTListener(this), this);
-        getServer().getPluginManager().registerEvents(new TNTPhysicsListener(this), this);
+        TNTPhysicsListener tntPhysics = new TNTPhysicsListener(this);
+        getServer().getPluginManager().registerEvents(tntPhysics, this);
         getServer().getPluginManager().registerEvents(new FactionTntCommandListener(this, factionManager), this);
         getServer().getPluginManager().registerEvents(new CannonConsistencyListener(this), this);
         getServer().getPluginManager().registerEvents(collectionChestListener, this);

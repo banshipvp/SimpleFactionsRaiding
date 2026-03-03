@@ -3,6 +3,7 @@ package local.simplefactionsraiding;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.entity.FallingBlock;
 import org.bukkit.entity.TNTPrimed;
@@ -57,6 +58,11 @@ public class CannonConsistencyListener implements Listener {
 
     private Team noCollideTeam;
 
+    /** Tracked live TNT/FallingBlock UUIDs — avoids world entity scans every tick. */
+    private final Set<UUID> trackedTNT = new HashSet<>();
+    private final Set<UUID> trackedFB  = new HashSet<>();
+    private int tickCounter = 0;
+
     public CannonConsistencyListener(JavaPlugin plugin) {
         this.plugin = plugin;
 
@@ -99,21 +105,24 @@ public class CannonConsistencyListener implements Listener {
     // =========================================================================
 
     private void onTick() {
-        for (var world : Bukkit.getWorlds()) {
-            if (velocityCapEnabled) tickVelocityCap(world);
-            if (entityMergeEnabled)  tickEntityMerge(world);
-            tickFallingBlockStability(world);
-        }
+        tickCounter++;
+        if (velocityCapEnabled) tickVelocityCap();
+        // Entity merge is O(n) with rarely any matches during active cannon fire.
+        // Run every 20 ticks (1 second) to save CPU.
+        if (entityMergeEnabled && tickCounter % 20 == 0) tickEntityMerge();
+        tickFallingBlockStability();
     }
 
-    private void tickVelocityCap(org.bukkit.World world) {
-        for (TNTPrimed tnt : world.getEntitiesByClass(TNTPrimed.class)) {
-            if (!tnt.isValid()) continue;
-            Vector vel = tnt.getVelocity();
+    private void tickVelocityCap() {
+        trackedTNT.removeIf(uuid -> {
+            org.bukkit.entity.Entity e = plugin.getServer().getEntity(uuid);
+            if (e == null || !e.isValid()) return true;
+            Vector vel = ((TNTPrimed) e).getVelocity();
             if (vel.lengthSquared() > velocityCapSq) {
-                tnt.setVelocity(vel.normalize().multiply(velocityCap));
+                ((TNTPrimed) e).setVelocity(vel.normalize().multiply(velocityCap));
             }
-        }
+            return false;
+        });
     }
 
     /**
@@ -122,34 +131,30 @@ public class CannonConsistencyListener implements Listener {
      * are the same cannon shot. Remove extras, keeping one representative.
      * Position rounded to 3 dp (1 mm) to absorb floating-point noise.
      */
-    private void tickEntityMerge(org.bukkit.World world) {
-        // TNT merging
+    private void tickEntityMerge() {
+        // TNT merging — uses tracked set, no world scan
         Map<String, TNTPrimed> seenTnt = new LinkedHashMap<>();
         List<TNTPrimed> removeTnt = new ArrayList<>();
-
-        for (TNTPrimed tnt : world.getEntitiesByClass(TNTPrimed.class)) {
-            if (!tnt.isValid()) continue;
+        for (UUID uuid : new ArrayList<>(trackedTNT)) {
+            org.bukkit.entity.Entity e = plugin.getServer().getEntity(uuid);
+            if (e == null || !e.isValid()) { trackedTNT.remove(uuid); continue; }
+            TNTPrimed tnt = (TNTPrimed) e;
             String key = buildTntKey(tnt);
-            if (seenTnt.containsKey(key)) {
-                removeTnt.add(tnt);
-            } else {
-                seenTnt.put(key, tnt);
-            }
+            if (seenTnt.containsKey(key)) removeTnt.add(tnt);
+            else seenTnt.put(key, tnt);
         }
         removeTnt.forEach(org.bukkit.entity.Entity::remove);
 
-        // FallingBlock merging
+        // FallingBlock merging — uses tracked set, no world scan
         Map<String, FallingBlock> seenFb = new LinkedHashMap<>();
         List<FallingBlock> removeFb = new ArrayList<>();
-
-        for (FallingBlock fb : world.getEntitiesByClass(FallingBlock.class)) {
-            if (!fb.isValid()) continue;
+        for (UUID uuid : new ArrayList<>(trackedFB)) {
+            org.bukkit.entity.Entity e = plugin.getServer().getEntity(uuid);
+            if (e == null || !e.isValid()) { trackedFB.remove(uuid); continue; }
+            FallingBlock fb = (FallingBlock) e;
             String key = buildFbKey(fb);
-            if (seenFb.containsKey(key)) {
-                removeFb.add(fb);
-            } else {
-                seenFb.put(key, fb);
-            }
+            if (seenFb.containsKey(key)) removeFb.add(fb);
+            else seenFb.put(key, fb);
         }
         removeFb.forEach(org.bukkit.entity.Entity::remove);
     }
@@ -183,6 +188,8 @@ public class CannonConsistencyListener implements Listener {
     public void onTNTSpawn(EntitySpawnEvent event) {
         if (!(event.getEntity() instanceof TNTPrimed tnt)) return;
 
+        trackedTNT.add(tnt.getUniqueId());
+
         if (antiNudgeEnabled && noCollideTeam != null) {
             noCollideTeam.addEntity(tnt);
         }
@@ -209,6 +216,8 @@ public class CannonConsistencyListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onFallingBlockSpawn(EntitySpawnEvent event) {
         if (!(event.getEntity() instanceof FallingBlock fb)) return;
+
+        trackedFB.add(fb.getUniqueId());
 
         if (chunkLoadingEnabled) {
             // Only load if not already loaded to avoid triggering block updates
@@ -244,27 +253,29 @@ public class CannonConsistencyListener implements Listener {
      * Prevent falling blocks (sand) from spreading horizontally when hitting walls.
      * Maintains cannon precision by locking X/Z position on collision.
      */
-    private void tickFallingBlockStability(org.bukkit.World world) {
-        for (FallingBlock fb : world.getEntitiesByClass(FallingBlock.class)) {
-            if (!fb.isValid()) continue;
-            
+    private void tickFallingBlockStability() {
+        trackedFB.removeIf(uuid -> {
+            org.bukkit.entity.Entity e = plugin.getServer().getEntity(uuid);
+            if (e == null || !e.isValid()) return true;
+            FallingBlock fb = (FallingBlock) e;
             String matName = fb.getBlockData().getMaterial().name();
-            boolean isSand = matName.equals("SAND") || matName.equals("RED_SAND");
-            if (!isSand) continue;
-            
-            // Check if falling block is near a solid block (wall collision)
-            Block blockAt = fb.getLocation().getBlock();
-            Block below = blockAt.getRelative(0, -1, 0);
-            
-            // If there's a solid block nearby (collision), lock horizontal movement
+            if (!matName.equals("SAND") && !matName.equals("RED_SAND")) return false;
+            Block below = fb.getLocation().getBlock().getRelative(0, -1, 0);
             if (below.getType().isSolid()) {
                 Vector vel = fb.getVelocity();
-                // Remove all horizontal velocity to prevent spreading
                 if (Math.abs(vel.getX()) > 0.001 || Math.abs(vel.getZ()) > 0.001) {
                     fb.setVelocity(new Vector(0, vel.getY(), 0));
                 }
             }
-        }
+            return false;
+        });
+    }
+
+    /** Returns true if the given block is a liquid (water, lava, bubble column, or waterlogged). */
+    private boolean isBlockLiquid(Block block) {
+        Material mat = block.getType();
+        if (mat == Material.WATER || mat == Material.LAVA || mat == Material.BUBBLE_COLUMN) return true;
+        return block.getBlockData() instanceof Waterlogged wl && wl.isWaterlogged();
     }
 
     // =========================================================================
@@ -295,25 +306,30 @@ public class CannonConsistencyListener implements Listener {
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
-        if (!(event.getEntity() instanceof TNTPrimed)) return;
+        if (!(event.getEntity() instanceof TNTPrimed tnt)) return;
+
+        trackedTNT.remove(tnt.getUniqueId());
 
         org.bukkit.Location loc = event.getLocation();
         Block originBlock = loc.getBlock();
 
         // 5. Explosion water check (AtlasSpigot 0847):
-        //    If TNT detonates inside liquid, no block damage.
-        //    Exception: if explode-lava is on and origin is lava, allow it.
+        //    If TNT detonates inside or immediately adjacent to liquid, no block damage.
+        //    We check 6 face-adjacent blocks in addition to the origin block because the
+        //    TNT entity center can cross a block boundary by a small floating-point amount,
+        //    placing the explosion coordinate in an air block while the entity is still
+        //    physically inside the water or waterlogged block.
         if (explosionWaterCheckEnabled) {
-            Material mat = originBlock.getType();
-            boolean isWaterlogged = originBlock.getBlockData() instanceof org.bukkit.block.data.Waterlogged wl 
-                    && wl.isWaterlogged();
-            boolean inLiquid = mat == Material.WATER
-                    || mat == Material.LAVA
-                    || mat == Material.BUBBLE_COLUMN
-                    || isWaterlogged;
-            boolean lavaExempt = explodeLavaEnabled && mat == Material.LAVA;
-
-            if (inLiquid && !lavaExempt) {
+            boolean lavaExempt = explodeLavaEnabled && originBlock.getType() == Material.LAVA;
+            boolean inLiquid = !lavaExempt && (
+                    isBlockLiquid(originBlock)
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.UP))
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.DOWN))
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.NORTH))
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.SOUTH))
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.EAST))
+                    || isBlockLiquid(originBlock.getRelative(BlockFace.WEST)));
+            if (inLiquid) {
                 event.blockList().clear();
                 return;
             }

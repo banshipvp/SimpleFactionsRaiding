@@ -1,6 +1,7 @@
 package local.simplefactionsraiding;
 
 import local.simplefactions.FactionManager;
+import local.simplefactions.Role;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
@@ -92,6 +93,10 @@ public class FactionTntCommandListener implements Listener {
             case "siphon":
             case "s":
                 handleSiphon(player, faction, args);
+                break;
+            case "set":
+            case "st":
+                handleSet(player, faction, args);
                 break;
             default:
                 sendHelp(player);
@@ -293,6 +298,29 @@ public class FactionTntCommandListener implements Listener {
         faction.addTnt(totalRemoved);
 
         player.sendMessage("§aSiphoned §e" + totalRemoved + " TNT §afrom §e" + touched + " dispensers §a(radius " + radius + ").");
+        showBalanceLine(player, faction);
+    }
+
+    private void handleSet(Player player, FactionManager.Faction faction, List<String> args) {
+        Role role = faction.getRole(player.getUniqueId());
+        if (role == null || !role.atLeast(Role.OFFICER)) {
+            player.sendMessage("§cOnly faction officers and leaders can set the TNT bank.");
+            return;
+        }
+
+        if (args.isEmpty()) {
+            player.sendMessage("§cUsage: /f tnt set (st) <amount>");
+            return;
+        }
+
+        Integer amount = parsePositiveInt(args.get(0));
+        if (amount == null) {
+            player.sendMessage("§cAmount must be a positive integer.");
+            return;
+        }
+
+        faction.setTntBank(amount);
+        player.sendMessage("§aSet faction TNT bank to §e" + amount + " TNT§a.");
         showBalanceLine(player, faction);
     }
 
@@ -550,5 +578,6 @@ public class FactionTntCommandListener implements Listener {
         player.sendMessage("§e/f tnt bal (b)");
         player.sendMessage("§e/f tnt fill (f) <radius> <amountPerDispenser> <maxPerDispenser>");
         player.sendMessage("§e/f tnt siphon (s) <amountPerDispenser|all> [radius]");
+        player.sendMessage("§e/f tnt set (st) <amount> §7[Officer+]");
     }
 }

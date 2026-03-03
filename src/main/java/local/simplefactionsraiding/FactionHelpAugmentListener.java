@@ -53,5 +53,6 @@ public class FactionHelpAugmentListener implements Listener {
         player.sendMessage("§e/f tnt bal (b)");
         player.sendMessage("§e/f tnt fill (f) <radius> <amountPerDispenser> <maxPerDispenser>");
         player.sendMessage("§e/f tnt siphon (s) <amountPerDispenser|all> [radius]");
+        player.sendMessage("§e/f tnt set (st) <amount> §7[Officer+]");
     }
 }

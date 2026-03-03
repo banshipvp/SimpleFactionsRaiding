@@ -74,11 +74,11 @@ cannoning:
 performance:
   # Maximum number of core-chunk TNT impacts processed each tick.
   # Lower = smoother TPS, but raids are processed with more delay during TNT spikes.
-  max-core-impacts-per-tick: 300
+  max-core-impacts-per-tick: 100
 
   # Maximum queued core-chunk impacts waiting to be processed.
   # Increase if you expect very large barrages.
-  max-core-impact-queue-size: 100000
+  max-core-impact-queue-size: 20000
 
   # How often (in ticks) to flush aggregated raid notifications.
   # 20 ticks = 1 second.
@@ -95,7 +95,7 @@ wilderness:
   cooldown-seconds: 60
 
   # Lock overworld to 5000x5000 via world border.
-  world-border-size: 5000
+  world-border-size: 3000
   world-border-center-x: 0.0
   world-border-center-z: 0.0
 

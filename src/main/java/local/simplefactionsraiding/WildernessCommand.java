@@ -1,6 +1,7 @@
 package local.simplefactionsraiding;
 
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -42,7 +43,6 @@ public class WildernessCommand implements CommandExecutor {
                 player.sendMessage("§cYou must wait §e" + left + "s §cbefore using /" + label.toLowerCase(Locale.ROOT) + " again.");
                 return true;
             }
-            cooldowns.put(player.getUniqueId(), now + cooldownSeconds * 1000L);
         }
 
         World world = player.getWorld();
@@ -58,46 +58,81 @@ public class WildernessCommand implements CommandExecutor {
         int max = half - padding;
 
         int maxAttempts = Math.max(20, plugin.getConfig().getInt("wilderness.max-attempts", 120));
-        Location destination = null;
-
-        for (int i = 0; i < maxAttempts; i++) {
-            int x = randomInRange(min, max);
-            int z = randomInRange(min, max);
-
-            int y = world.getHighestBlockYAt(x, z);
-            if (y <= world.getMinHeight()) {
-                continue;
-            }
-
-            Block ground = world.getBlockAt(x, y - 1, z);
-            Material groundType = ground.getType();
-            if (!groundType.isSolid() || isUnsafeGround(groundType)) {
-                continue;
-            }
-
-            Block feet = world.getBlockAt(x, y, z);
-            Block head = world.getBlockAt(x, y + 1, z);
-            if (!feet.isPassable() || !head.isPassable()) {
-                continue;
-            }
-
-            destination = new Location(world, x + 0.5, y, z + 0.5, player.getLocation().getYaw(), player.getLocation().getPitch());
-            break;
-        }
-
-        if (destination == null) {
-            player.sendMessage("§cCould not find a safe wilderness location. Try again.");
-            return true;
-        }
-
-        Location finalDestination = destination;
         player.sendMessage("§7Teleporting to wilderness...");
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            player.teleport(finalDestination);
-            player.sendMessage("§aTeleported to wilderness at §e" + finalDestination.getBlockX() + "§7, §e" + finalDestination.getBlockY() + "§7, §e" + finalDestination.getBlockZ());
-        });
+        findAndTeleportAsync(player, world, min, max, maxAttempts, cooldownSeconds, label);
 
         return true;
+    }
+
+    private void findAndTeleportAsync(Player player,
+                                      World world,
+                                      int min,
+                                      int max,
+                                      int remainingAttempts,
+                                      int cooldownSeconds,
+                                      String label) {
+        if (!player.isOnline()) {
+            return;
+        }
+
+        if (remainingAttempts <= 0) {
+            player.sendMessage("§cCould not find a safe wilderness location. Try again.");
+            return;
+        }
+
+        int x = randomInRange(min, max);
+        int z = randomInRange(min, max);
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+
+        world.getChunkAtAsync(chunkX, chunkZ, true, true).whenComplete((Chunk chunk, Throwable throwable) -> {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
+
+                if (throwable != null || chunk == null) {
+                    findAndTeleportAsync(player, world, min, max, remainingAttempts - 1, cooldownSeconds, label);
+                    return;
+                }
+
+                int y = world.getHighestBlockYAt(x, z);
+                if (y <= world.getMinHeight()) {
+                    findAndTeleportAsync(player, world, min, max, remainingAttempts - 1, cooldownSeconds, label);
+                    return;
+                }
+
+                Block ground = world.getBlockAt(x, y - 1, z);
+                Material groundType = ground.getType();
+                if (!groundType.isSolid() || isUnsafeGround(groundType)) {
+                    findAndTeleportAsync(player, world, min, max, remainingAttempts - 1, cooldownSeconds, label);
+                    return;
+                }
+
+                Block feet = world.getBlockAt(x, y, z);
+                Block head = world.getBlockAt(x, y + 1, z);
+                if (!feet.isPassable() || !head.isPassable()) {
+                    findAndTeleportAsync(player, world, min, max, remainingAttempts - 1, cooldownSeconds, label);
+                    return;
+                }
+
+                Location destination = new Location(world, x + 0.5, y, z + 0.5, player.getLocation().getYaw(), player.getLocation().getPitch());
+                player.teleportAsync(destination).thenAccept(success -> Bukkit.getScheduler().runTask(plugin, () -> {
+                    if (!player.isOnline()) {
+                        return;
+                    }
+
+                    if (Boolean.TRUE.equals(success)) {
+                        if (!player.hasPermission("simplefactionsraiding.wild.bypasscooldown")) {
+                            cooldowns.put(player.getUniqueId(), System.currentTimeMillis() + cooldownSeconds * 1000L);
+                        }
+                        player.sendMessage("§aTeleported to wilderness at §e" + destination.getBlockX() + "§7, §e" + destination.getBlockY() + "§7, §e" + destination.getBlockZ());
+                    } else {
+                        player.sendMessage("§cTeleport failed. Please try again.");
+                    }
+                }));
+            });
+        });
     }
 
     private boolean isUnsafeGround(Material material) {
