@@ -108,7 +108,7 @@ public class TNTPhysicsListener implements Listener {
         set.add(Material.LADDER);
         set.add(Material.IRON_BARS);
         set.add(Material.GLASS_PANE);
-        set.add(Material.CHAIN);
+        { Material m = Material.getMaterial("CHAIN"); if (m != null) set.add(m); }
         set.add(Material.END_ROD);
         set.add(Material.ENCHANTING_TABLE);
         set.add(Material.BREWING_STAND);
@@ -144,7 +144,7 @@ public class TNTPhysicsListener implements Listener {
         map.put(Material.IRON_BARS,         0.30);
         map.put(Material.GLASS_PANE,        0.20);
         // Chain – thin links
-        map.put(Material.CHAIN,             0.25);
+        { Material chain = Material.getMaterial("CHAIN"); if (chain != null) map.put(chain, 0.25); }
         // End rod – very thin pole
         map.put(Material.END_ROD,           0.12);
         // Enchanting table – chunky centre block
@@ -611,6 +611,24 @@ public class TNTPhysicsListener implements Listener {
             }
         }, 1L);
     }
+
+    /**
+     * Updates the velocity baseline ({@code prevVel}) for a TNT entity pushed by
+     * an explosion handled outside of {@link #tickAllTNT}.  Also marks the entity
+     * as explosion-launched so the next physics tick treats its current speed as
+     * intentional rather than an anomaly to zero out.
+     *
+     * @param id     UUID of the TNT entity
+     * @param newVel velocity just applied via {@link org.bukkit.entity.Entity#setVelocity}
+     */
+    private void syncVelocityFromExternal(UUID id, Vector newVel) {
+        prevVel.put(id, newVel.clone());
+        double hSq = newVel.getX() * newVel.getX() + newVel.getZ() * newVel.getZ();
+        if (hSq >= PARTIAL_SPEED_THRESHOLD_SQ * 0.5) {
+            launchedTNT.add(id);
+        }
+    }
+
     /**
      * Ray-marches from {@code start} to {@code end} and returns a per-axis
      * coverage vector (X, Y, Z) where each component is in [0.0, 1.0]:
