@@ -315,70 +315,66 @@ public class TNTPhysicsListener implements Listener {
                                    || diffHSq >= 0.001; // detect even small blast impulses
 
         double nx, ny, nz;
-        // For launched-in-water TNT, stores the clean air-trajectory velocity so
-        // prevVel tracks air physics (not the water-drag-compensated set value).
-        Vector airVelOverride = null;
 
         if (launchedByExplosion) {
-            // Detect the very first explosion tick BEFORE adding to launchedTNT.
-            boolean firstExplosionTick = !launchedTNT.contains(uuid);
-
             // Mark as launched so future ticks retain launch state even if
-            // exposure attenuation or drag brought prevHSq below the threshold.
+            // drag brings prevHSq below the detection threshold.
             launchedTNT.add(uuid);
-            // Remove from pinned-position tracking - TNT is now free-flying.
+            // Remove from stationary-water pin - TNT is now free-flying.
             pinnedPos.remove(uuid);
-            // Note: launchedPos is NOT cleared here; it is managed per-tick below.
-
-            // Compute the air-trajectory velocity for this tick.
-            double ax, ay, az;
-            if (inWater && !firstExplosionTick) {
-                // Coasting through water: advance the clean air trajectory stored
-                // in prevVel (set via airVelOverride on the previous tick).
-                ax = prev.getX() * 0.98;
-                ay = (prev.getY() - 0.04) * 0.98;
-                az = prev.getZ() * 0.98;
-            } else {
-                // First explosion tick (or in air): the vanilla-reported velocity
-                // is the best estimate of the current blast impulse.
-                ax = actualVel.getX();
-                ay = actualVel.getY();
-                az = actualVel.getZ();
-            }
 
             if (inWater) {
-                // Correct position drift caused by water current / buoyancy.
-                // We saved where the entity SHOULD be at the top of this tick;
-                // if vanilla water physics moved it elsewhere, teleport it back.
+                // Pure teleport-based air physics in water.
+                // We zero velocity so vanilla water drag/buoyancy cannot move the entity.
+                // Instead we teleport one air-physics step forward each tick.
+                // prevVel stores the clean air velocity (never water-corrupted).
                 double[] lp = launchedPos.get(uuid);
-                if (lp != null) {
-                    Location curLoc = tnt.getLocation();
-                    if (Math.abs(curLoc.getX() - lp[0]) > 0.01
-                            || Math.abs(curLoc.getY() - lp[1]) > 0.01
-                            || Math.abs(curLoc.getZ() - lp[2]) > 0.01) {
-                        tnt.teleport(new Location(tnt.getWorld(), lp[0], lp[1], lp[2],
-                                curLoc.getYaw(), curLoc.getPitch()));
-                    }
-                }
-                // Record expected position after this tick's movement (cur + velocity).
-                Location loc = tnt.getLocation();
-                launchedPos.put(uuid, new double[]{loc.getX()+ax, loc.getY()+ay, loc.getZ()+az});
 
-                // Set the clean air-trajectory velocity directly.
-                // Entity moves by (ax,ay,az) this tick; vanilla will water-drag
-                // the velocity afterwards, but we restore it next tick via prevVel.
-                nx = ax; ny = ay; nz = az;
-                airVelOverride = new Vector(ax, ay, az);
+                if (lp == null) {
+                    // First tick after explosion: blast has already moved the entity.
+                    // Record its current position and use actualVel as initial air vel.
+                    Location curLoc = tnt.getLocation();
+                    launchedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
+                    prevVel.put(uuid, actualVel.clone());
+                    // Zero velocity so vanilla does not move the entity further this tick.
+                    tnt.setVelocity(new Vector(0, 0, 0));
+                    return;
+                }
+
+                // Advance clean air trajectory (gravity -0.04, drag 0.98).
+                double ax = prev.getX() * 0.98;
+                double ay = (prev.getY() - 0.04) * 0.98;
+                double az = prev.getZ() * 0.98;
+
+                double nextX = lp[0] + ax;
+                double nextY = lp[1] + ay;
+                double nextZ = lp[2] + az;
+
+                // Teleport entity forward to the new air-trajectory position.
+                Location curLoc = tnt.getLocation();
+                tnt.teleport(new Location(tnt.getWorld(), nextX, nextY, nextZ,
+                        curLoc.getYaw(), curLoc.getPitch()));
+
+                launchedPos.put(uuid, new double[]{nextX, nextY, nextZ});
+                prevVel.put(uuid, new Vector(ax, ay, az));
+
+                if (ax * ax + az * az < LAUNCH_CLEAR_SPEED_SQ) {
+                    launchedTNT.remove(uuid);
+                    launchedPos.remove(uuid);
+                }
+
+                // Zero velocity - we own the position; vanilla must not move the entity.
+                tnt.setVelocity(new Vector(0, 0, 0));
+                return;
+
             } else {
-                // Leaving water (or was already in air): clear position tracking.
+                // In air - clear water tracking, apply gravity + partial collision.
                 launchedPos.remove(uuid);
-                // Trust vanilla air physics.
+
                 nx = actualVel.getX();
                 ny = actualVel.getY();
                 nz = actualVel.getZ();
 
-                // Apply partial-block collision for launched TNT in air
-                // (e.g. stop a cannonball at a ladder stopper).
                 if (partialBlockEnabled) {
                     Vector resolved = resolvePartialCollision(tnt, new Vector(nx, ny, nz));
                     nx = resolved.getX();
@@ -386,31 +382,20 @@ public class TNTPhysicsListener implements Listener {
                     nz = resolved.getZ();
                 }
             }
+
         } else {
-            // Not explosion-launched: pin X, Y, Z absolutely in water.
+            // Not explosion-launched - stationary TNT, pin it absolutely in water.
             nx = 0;
             nz = 0;
 
             if (inWater) {
-                // â”€â”€ Stationary TNT in water (cannon pot) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                // Vanilla applies buoyancy (Y up) + water current (X/Z drift) and
-                // moves the entity every tick before our handler runs.  We override
-                // ALL three axes by maintaining a pinned 3-D position and teleporting
-                // the entity back to it (advancing Y ourselves with air gravity).
-
-                // â”€â”€ Velocity trick: cancel buoyancy without teleporting in Y â”€â”€â”€â”€â”€â”€
-                // Vanilla water physics apply: velocity *= 0.8, then Y += 0.04 (buoyancy).
-                // Setting ny = -0.05 causes: -0.05 * 0.8 + 0.04 = 0.00 â†’ zero Y movement.
-                // The entity is frozen in Y by velocity, not by teleport â€” no client jitter.
+                // Teleport X/Z back; cancel buoyancy with a fixed Y velocity.
                 ny = -0.05;
 
                 double[] saved = pinnedPos.get(uuid);
                 Location curLoc = tnt.getLocation();
 
                 if (saved != null) {
-                    // Teleport X/Z back to the pinned position if water current has
-                    // drifted the entity.  In source-water pots the drift is zero;
-                    // in flowing-water tubes this corrects horizontal current each tick.
                     double driftX = Math.abs(curLoc.getX() - saved[0]);
                     double driftZ = Math.abs(curLoc.getZ() - saved[2]);
                     if (driftX > 0.001 || driftZ > 0.001) {
@@ -418,16 +403,12 @@ public class TNTPhysicsListener implements Listener {
                                 saved[0], curLoc.getY(), saved[2],
                                 curLoc.getYaw(), curLoc.getPitch()));
                     }
-                    // Y is managed by the ny = -0.05 velocity; do NOT advance saved[1].
                 } else {
-                    // First tick in water: save current position.
                     pinnedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
                 }
             } else {
-                // In air â€” vanilla handles Y correctly (gravity + collision response).
                 ny = actualVel.getY();
 
-                // Partial block collision for slow, non-launched TNT in air.
                 if (partialBlockEnabled) {
                     Vector resolved = resolvePartialCollision(tnt, new Vector(nx, ny, nz));
                     nx = resolved.getX();
@@ -439,16 +420,12 @@ public class TNTPhysicsListener implements Listener {
 
         Vector newVel = new Vector(nx, ny, nz);
 
-        // Clear launch state once horizontal speed has truly decayed to near-zero.
-        double newHSq = nx * nx + nz * nz;
-        if (newHSq < LAUNCH_CLEAR_SPEED_SQ) {
+        if (nx * nx + nz * nz < LAUNCH_CLEAR_SPEED_SQ) {
             launchedTNT.remove(uuid);
             launchedPos.remove(uuid);
         }
 
-        // For launched-in-water TNT, store the clean air-trajectory velocity so
-        // the next tick's physics chain is based on correct air kinematics.
-        prevVel.put(uuid, airVelOverride != null ? airVelOverride : newVel);
+        prevVel.put(uuid, newVel);
         tnt.setVelocity(newVel);
     }
 
