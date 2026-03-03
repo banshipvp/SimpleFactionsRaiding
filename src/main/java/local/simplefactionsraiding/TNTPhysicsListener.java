@@ -331,45 +331,51 @@ public class TNTPhysicsListener implements Listener {
             launchedPos.remove(uuid);
 
             if (inWater) {
-                // Launched TNT in water: fly as if no water exists.
+                // Launched TNT in water: make it travel at pure air physics.
                 //
-                // Minecraft tick order each game tick:
-                //   1. gravity applied to stored velocity:  vel.Y -= 0.04
-                //   2. entity MOVES by that velocity        (position changes here)
-                //   3. water drag applied to stored vel:    vel *= 0.8, vel.Y += 0.04
+                // Vanilla water physics per tick (BEFORE our handler runs):
+                //   1. vel.Y += 0.04  (buoyancy)
+                //   2. vel  *= 0.8    (drag on all axes)
+                //   3. position += vel  <-- actual movement
                 //
-                // Step 2 uses exactly the velocity we SET, so setting vel = airVel
-                // makes the entity move identically to being in air.  Step 3 only
-                // corrupts the stored velocity - we ignore actualVel for this path
-                // and recompute airVel ourselves each tick.
+                // So if we SET velocity = V, the entity MOVES by:
+                //   dx = V.X * 0.8
+                //   dy = (V.Y + 0.04) * 0.8
+                //   dz = V.Z * 0.8
                 //
-                // airVel chain (tracked in prevVel via airVelOverride):
-                //   first tick  -> undo water drag on actualVel to recover blast vel,
-                //                  then advance one air step (drag 0.98, grav 0.04 Y)
-                //   every other -> advance prev airVel one air step
+                // We want movement to match pure air trajectory (ax, ay-0.04, az).
+                // Solving for what to SET:
+                //   V.X = ax / 0.8
+                //   V.Y = (ay - 0.04) / 0.8 - 0.04
+                //   V.Z = az / 0.8
+                //
+                // We track the clean air trajectory in prevVel (via airVelOverride)
+                // so it is never corrupted by water drag.
                 double ax, ay, az;
                 if (firstExplosionTick) {
-                    // actualVel = blast velocity after ONE round of water drag:
+                    // actualVel = blast velocity AFTER water physics ran on it:
                     //   actualVel.X = blast.X * 0.8
-                    //   actualVel.Y = (blast.Y - 0.04) * 0.8 + 0.04
-                    // Undo drag to recover blast, then advance one air step.
+                    //   actualVel.Y = (blast.Y + 0.04) * 0.8
+                    // Recover original blast velocity:
                     double bx = actualVel.getX() / 0.8;
-                    double by = (actualVel.getY() - 0.04) / 0.8 + 0.04;
+                    double by = actualVel.getY() / 0.8 - 0.04;
                     double bz = actualVel.getZ() / 0.8;
+                    // Advance one air step (gravity -0.04, drag 0.98).
                     ax = bx * 0.98;
                     ay = (by - 0.04) * 0.98;
                     az = bz * 0.98;
                 } else {
-                    // Coasting: advance our tracked air trajectory by one step.
+                    // Coasting: advance clean air trajectory one step.
                     ax = prev.getX() * 0.98;
                     ay = (prev.getY() - 0.04) * 0.98;
                     az = prev.getZ() * 0.98;
                 }
-                // Set directly - entity moves by (ax, ax-0.04, az) just like in air.
-                // Water drag after movement is harmless because we override every tick.
-                nx = ax;
-                ny = ay;
-                nz = az;
+                // Pre-compensate so that after vanilla applies buoyancy+drag
+                // the entity actually moves by (ax, ay-0.04, az).
+                nx = ax / 0.8;
+                ny = (ay - 0.04) / 0.8 - 0.04;
+                nz = az / 0.8;
+                // Store the clean air velocity so next tick's chain is correct.
                 airVelOverride = new Vector(ax, ay, az);
             } else {
                 // In air - vanilla air physics are correct, trust them.
