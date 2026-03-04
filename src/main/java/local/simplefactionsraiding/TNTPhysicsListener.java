@@ -20,6 +20,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
+import java.lang.reflect.Field;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -235,6 +236,46 @@ public class TNTPhysicsListener implements Listener {
     public boolean isSuppressingExplosions() { return suppressExplosions; }
     public void setSuppressExplosions(boolean suppress) { this.suppressExplosions = suppress; }
 
+    // -----------------------------------------------------------------------
+    // NMS noPhysics — the AtlasSpigot equivalent of isPushedByFluid()=false
+    // -----------------------------------------------------------------------
+
+    /**
+     * Cache the reflected noPhysics field on first use.
+     * In Paper 1.21 (Mojang-mapped), the field lives on net.minecraft.world.entity.Entity
+     * and is named "noPhysics" (public boolean).  With noPhysics=true, vanilla
+     * Entity.move() returns immediately without applying ANY physics (gravity, water
+     * buoyancy, water flow, block collisions).  Bukkit teleport() bypasses move() and
+     * still works, so we retain full control over position via teleportation.
+     */
+    private static Field noPhysicsField = null;
+
+    private static void setNoPhysics(Entity entity, boolean value) {
+        try {
+            // CraftEntity exposes getHandle() which returns the NMS entity.
+            Object nmsEntity = entity.getClass().getMethod("getHandle").invoke(entity);
+            if (noPhysicsField == null) {
+                // Walk class hierarchy to find the field (it's on a superclass).
+                Class<?> cls = nmsEntity.getClass();
+                while (cls != null) {
+                    try {
+                        Field f = cls.getDeclaredField("noPhysics");
+                        f.setAccessible(true);
+                        noPhysicsField = f;
+                        break;
+                    } catch (NoSuchFieldException ignored) {
+                        cls = cls.getSuperclass();
+                    }
+                }
+            }
+            if (noPhysicsField != null) {
+                noPhysicsField.set(nmsEntity, value);
+            }
+        } catch (Exception ignored) {
+            // Reflection failed — fall back gracefully (teleport approach still runs)
+        }
+    }
+
     public TNTPhysicsListener(JavaPlugin plugin) {
         this.plugin = plugin;
         this.waterCancelEnabled  = plugin.getConfig().getBoolean("cannoning.cancel-water-flow",       true);
@@ -253,11 +294,42 @@ public class TNTPhysicsListener implements Listener {
         if (event.getEntity() instanceof TNTPrimed tnt) {
             UUID uuid = tnt.getUniqueId();
             trackedTNT.add(uuid);
-            // Seed prevVel to zero so the first physics tick doesn't inherit
-            // whatever vanilla set (which may be water-affected).
+
+            // Zero velocity immediately — prevents any fluid/gravity force from
+            // applying before our first per-tick handler runs.
+            tnt.setVelocity(new Vector(0, 0, 0));
             prevVel.put(uuid, new Vector(0, 0, 0));
+
+            // Re-center the entity at the floor-center of its current block.
+            // Vanilla dispensers spawn TNT at an offset from the dispenser face
+            // (e.g. center + facing * 0.6 + random jitter) which can leave the
+            // bounding box clipping into an adjacent block.  Teleporting to the
+            // exact floor-center (X+0.5, Y+0.0, Z+0.5) of the block the entity
+            // is currently in guarantees the 0.98x0.98 bbox fits cleanly inside
+            // the water or air block with no overlap above or below.
+            // We only do this for non-solid blocks (water, air) — if somehow the
+            // entity spawned inside glass, leave it to vanilla's push-out logic.
+            Block entBlock = tnt.getLocation().getBlock();
+            if (!entBlock.getType().isSolid()) {
+                Location blockCenter = entBlock.getLocation().add(0.5, 0.0, 0.5);
+                tnt.teleport(blockCenter);
+            }
+
             // 4-second fuse (80 ticks) for all TNT entities.
             tnt.setFuseTicks(80);
+
+            // If the TNT is in water, pin it immediately.
+            if (isTNTInWater(tnt)) {
+                Location spawnLoc = tnt.getLocation();
+                pinnedPos.put(uuid, new double[]{spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ()});
+                // noPhysics=true: vanilla Entity.move() is short-circuited entirely
+                // so buoyancy, water-current, and gravity produce no displacement.
+                // This is the AtlasSpigot equivalent of isPushedByFluid()=false.
+                // The per-tick teleport (below) is a belt-and-suspenders backup in
+                // case NMS reflection fails in this Paper build.
+                setNoPhysics(tnt, true);
+                tnt.setGravity(false);
+            }
         }
     }
 
@@ -292,6 +364,13 @@ public class TNTPhysicsListener implements Listener {
 
         boolean inWater = isTNTInWater(tnt);
 
+        // noPhysics=true while in water: vanilla Entity.move() is skipped entirely,
+        // so water buoyancy, flow, and gravity produce zero position change.
+        // noPhysics=false in air: vanilla handles gravity + block collision normally.
+        // setGravity mirrors this for defensive completeness.
+        setNoPhysics(tnt, inWater);
+        tnt.setGravity(!inWater);
+
         // ----------------------------------------------------------------
         // Explosion-launch detection
         // ----------------------------------------------------------------
@@ -302,17 +381,29 @@ public class TNTPhysicsListener implements Listener {
         //      Water currents are weak (~0.04-0.07/tick) so the threshold cleanly
         //      separates water drift from real blast forces.
         double prevHSq = prev.getX() * prev.getX() + prev.getZ() * prev.getZ();
-        double diffX   = actualVel.getX() - prev.getX();
-        double diffZ   = actualVel.getZ() - prev.getZ();
-        double diffHSq = diffX * diffX + diffZ * diffZ;
 
-        // Also consult the persistent launchedTNT set: once a TNT has been
-        // explosion-launched it stays in "launched" mode until horizontal speed
-        // truly decays to near-zero, even if vanilla drag or exposure attenuation
-        // temporarily brings prevHSq below the detection threshold.
+        // Explosion-launch is detected via two reliable signals only:
+        //   a) launchedTNT set  -- the MONITOR explosion-event handler
+        //      (syncVelocityFromExternal) marks this entity before our scheduler
+        //      tick runs, so it is always up-to-date for real blast events.
+        //   b) prevHSq -- the velocity WE set last tick was already high, meaning
+        //      the TNT is still coasting from an earlier explosion.
+        //
+        // WHY NO diffHSq THRESHOLD:
+        //   With noPhysics=true the entity cannot physically move from fluid forces,
+        //   but Minecraft still writes water current + buoyancy into deltaMovement
+        //   BEFORE calling Entity.move() (which noPhysics short-circuits).  So
+        //   tnt.getVelocity() can return a non-zero fluid-contaminated vector even
+        //   when the entity is perfectly stationary in a water pot.
+        //   A diffHSq threshold of 0.001 was matching these fluid-velocity deltas
+        //   (~0.01-0.05 b/t per axis for a normal water current) and falsely marking
+        //   water-pot TNT as explosion-launched.  Once in "launched" mode the
+        //   air-gravity teleport path applies -0.04 Y per tick, making the TNT
+        //   visibly sink; once that state clears the entity re-pins at the wrong
+        //   lower Y and buoyancy snaps it back up -- the exact "down/glitch-up"
+        //   and XZ water-drift issues users reported.
         boolean launchedByExplosion = launchedTNT.contains(uuid)
-                                   || prevHSq >= PARTIAL_SPEED_THRESHOLD_SQ
-                                   || diffHSq >= 0.001; // detect even small blast impulses
+                                   || prevHSq >= PARTIAL_SPEED_THRESHOLD_SQ;
 
         double nx, ny, nz;
 
@@ -331,12 +422,16 @@ public class TNTPhysicsListener implements Listener {
                 double[] lp = launchedPos.get(uuid);
 
                 if (lp == null) {
-                    // First tick after explosion: blast has already moved the entity.
-                    // Record its current position and use actualVel as initial air vel.
+                    // First tick after explosion in water.
+                    // With noPhysics=true the entity never moved from its anchor, so
+                    // curLoc IS the correct launch origin.
+                    // prevVel already holds the ATTENUATED blast velocity set by
+                    // syncVelocityFromExternal — do NOT overwrite it with actualVel
+                    // (which is the raw, unattenuated blast vel still sitting in the
+                    // entity's deltaMovement because noPhysics prevented it from being
+                    // consumed).  Leave prevVel as-is; the next iteration uses it.
                     Location curLoc = tnt.getLocation();
                     launchedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
-                    prevVel.put(uuid, actualVel.clone());
-                    // Zero velocity so vanilla does not move the entity further this tick.
                     tnt.setVelocity(new Vector(0, 0, 0));
                     return;
                 }
@@ -346,11 +441,28 @@ public class TNTPhysicsListener implements Listener {
                 double ay = (prev.getY() - 0.04) * 0.98;
                 double az = prev.getZ() * 0.98;
 
-                double nextX = lp[0] + ax;
-                double nextY = lp[1] + ay;
-                double nextZ = lp[2] + az;
+                double destX = lp[0] + ax;
+                double destY = lp[1] + ay;
+                double destZ = lp[2] + az;
 
-                // Teleport entity forward to the new air-trajectory position.
+                // Sweep the intended trajectory for block collisions.
+                // This prevents TNT from tunnelling through floors, walls, or any
+                // solid/partial block while we are overriding vanilla physics via
+                // teleportation.  sweepPath stops at the last safe position before
+                // the first blocking surface.
+                double[] swept = sweepPath(tnt.getWorld(),
+                        lp[0], lp[1], lp[2], destX, destY, destZ);
+                double nextX = swept[0];
+                double nextY = swept[1];
+                double nextZ = swept[2];
+
+                // If any axis was stopped by a block, zero the corresponding
+                // velocity component so the TNT does not keep pushing into the block.
+                if (Math.abs(nextX - destX) > 1e-4) ax = 0;
+                if (Math.abs(nextY - destY) > 1e-4) ay = 0;
+                if (Math.abs(nextZ - destZ) > 1e-4) az = 0;
+
+                // Teleport entity forward to the swept (collision-safe) position.
                 Location curLoc = tnt.getLocation();
                 tnt.teleport(new Location(tnt.getWorld(), nextX, nextY, nextZ,
                         curLoc.getYaw(), curLoc.getPitch()));
@@ -384,30 +496,49 @@ public class TNTPhysicsListener implements Listener {
             }
 
         } else {
-            // Not explosion-launched - stationary TNT, pin it absolutely in water.
-            nx = 0;
-            nz = 0;
+            // Not explosion-launched: stationary or slow-moving TNT.
 
             if (inWater) {
-                // Teleport X/Z back; cancel buoyancy with a fixed Y velocity.
-                ny = -0.05;
+                // STATIC PIN in water.
+                //
+                // noPhysics=true (set above) is the PREFERRED mechanism: it makes
+                // vanilla Entity.move() a no-op so buoyancy, water-current, and gravity
+                // produce zero displacement.  However, if NMS reflection fails silently
+                // in this Paper build (different field name, module access denied, etc.),
+                // noPhysics would be a no-op and water current would push the TNT on
+                // every tick — causing the "drifting" and apparent "behind the dispenser"
+                // behaviour users see.
+                //
+                // The unconditional teleport below is the belt-and-suspenders backup:
+                // regardless of whether noPhysics worked, we forcibly return the entity
+                // to its anchor every tick.  The maximum visible drift is one vanilla tick
+                // of water-current motion (~0.01 block) — well below the 0.0625-block
+                // client-update threshold, so players see the TNT as perfectly stationary.
 
-                double[] saved = pinnedPos.get(uuid);
                 Location curLoc = tnt.getLocation();
-
-                if (saved != null) {
-                    double driftX = Math.abs(curLoc.getX() - saved[0]);
-                    double driftZ = Math.abs(curLoc.getZ() - saved[2]);
-                    if (driftX > 0.001 || driftZ > 0.001) {
-                        tnt.teleport(new Location(tnt.getWorld(),
-                                saved[0], curLoc.getY(), saved[2],
-                                curLoc.getYaw(), curLoc.getPitch()));
-                    }
+                double[] saved = pinnedPos.get(uuid);
+                if (saved == null) {
+                    // First tick seeing this TNT in water — record current position as anchor.
+                    saved = new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()};
+                    pinnedPos.put(uuid, saved);
                 } else {
-                    pinnedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
+                    // Every subsequent tick: unconditionally snap back to the anchor.
+                    tnt.teleport(new Location(tnt.getWorld(),
+                            saved[0], saved[1], saved[2],
+                            curLoc.getYaw(), curLoc.getPitch()));
                 }
+
+                nx = 0;
+                ny = 0;
+                nz = 0;
             } else {
+                // In AIR, not explosion-launched: pass vanilla's computed velocity
+                // through (preserves prime momentum and gravity) then apply partial-
+                // block collision on top.  Do NOT zero X/Z — that would kill the
+                // initial prime-momentum jump every cannon cannon designer relies on.
+                nx = actualVel.getX();
                 ny = actualVel.getY();
+                nz = actualVel.getZ();
 
                 if (partialBlockEnabled) {
                     Vector resolved = resolvePartialCollision(tnt, new Vector(nx, ny, nz));
@@ -806,18 +937,22 @@ public class TNTPhysicsListener implements Listener {
         return false;
     }
 
+
     // -----------------------------------------------------------------------
     // Explosion exposure adjustment
     // -----------------------------------------------------------------------
 
     /**
-     * At MONITOR priority the block list has been calculated but entity velocity
-     * changes from the explosion have NOT yet been applied, so we can safely
-     * snapshot pre-explosion velocities here.  One tick later vanilla will have
-     * pushed the nearby TNT entities; we then compute the explosion-induced delta,
-     * ray-march through any partial blocks between the explosion and each TNT,
-     * and scale the delta down by the fraction of the ray that was inside a
-     * partial-block bounding box.
+     * Computes partial-block exposure attenuation SYNCHRONOUSLY at MONITOR priority.
+     * At this point vanilla has already applied blast velocity to all nearby entities,
+     * so tnt.getVelocity() == post-blast; prevVel map == pre-blast baseline.
+     * delta = post - pre = raw blast impulse.  We attenuate per-axis by how much
+     * of the ray explosion -> TNT passes through partial blocks (ladder, slab, etc).
+     *
+     * WHY NOT DELAYED: for water-pinned TNT, tickAllTNT runs first next tick and
+     * zeros velocity (it owns the trajectory).  A 1-tick-later callback would read
+     * postVel=0, delta=0, and silently do nothing -- breaking exposure for every TNT
+     * sitting in a cannon water pot.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onEntityExplode(EntityExplodeEvent event) {
@@ -826,60 +961,42 @@ public class TNTPhysicsListener implements Listener {
 
         Location explosionLoc = event.getLocation();
 
-        // Snapshot: entity -> pre-explosion velocity
-        Map<TNTPrimed, Vector> snapshot = new HashMap<>();
         for (Entity e : explosionLoc.getNearbyEntities(
                 BLAST_SAMPLE_RADIUS, BLAST_SAMPLE_RADIUS, BLAST_SAMPLE_RADIUS)) {
-            if (e instanceof TNTPrimed tnt && tnt.isValid()) {
-                snapshot.put(tnt, tnt.getVelocity().clone());
-            }
+            if (!(e instanceof TNTPrimed tnt) || !tnt.isValid()) continue;
+            if (tnt == event.getEntity()) continue; // the detonating TNT itself
+
+            UUID tid       = tnt.getUniqueId();
+            Vector preVel  = prevVel.getOrDefault(tid, new Vector(0, 0, 0)); // pre-blast
+            Vector postVel = tnt.getVelocity();                               // post-blast
+            Vector delta   = postVel.clone().subtract(preVel);
+
+            // 1e-6 catches blast impulses as small as ~0.001 b/t (e.g. far-range
+            // explosions or near-zero exposure through ladders) without matching the
+            // near-zero noise from per-tick velocity bookkeeping.
+            if (delta.lengthSquared() < 1e-6) continue;
+
+            Vector axisCov = rayMarchAxisCoverage(
+                    explosionLoc,
+                    tnt.getLocation().add(0, 0.49, 0));
+
+            double expX = 1.0 - axisCov.getX();
+            double expY = 1.0 - axisCov.getY();
+            double expZ = 1.0 - axisCov.getZ();
+
+            // Fully exposed on all axes -- leave vanilla blast result unchanged
+            if (expX >= 1.0 - 1e-3 && expY >= 1.0 - 1e-3 && expZ >= 1.0 - 1e-3) continue;
+
+            Vector newVel = preVel.clone().add(new Vector(
+                    delta.getX() * expX,
+                    delta.getY() * expY,
+                    delta.getZ() * expZ));
+
+            tnt.setVelocity(newVel);
+            // Update prevVel and mark as launched so tickAllTNT on the next tick
+            // treats this as explosion-pushed rather than pinning it to zero.
+            syncVelocityFromExternal(tid, newVel);
         }
-
-        if (snapshot.isEmpty()) return;
-
-        // One tick later: vanilla has applied explosion velocity; adjust for partial exposure.
-        // We also update our prevVel record so the physics tick handler on the SAME tick
-        // will have a correct baseline (prevents same-tick mismatch from killing the velocity).
-        plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
-            for (Map.Entry<TNTPrimed, Vector> entry : snapshot.entrySet()) {
-                TNTPrimed tnt = entry.getKey();
-                if (!tnt.isValid()) continue;
-
-                Vector preVel  = entry.getValue();
-                // Read the velocity that is currently on the entity.  Our tick handler
-                // may have already run this tick and set a clean air-physics value;
-                // that is fine â€” we still want to apply the exposure attenuation.
-                Vector postVel = tnt.getVelocity();
-                Vector delta   = postVel.clone().subtract(preVel);
-
-                if (delta.lengthSquared() < 1e-5) continue; // barely affected
-
-                // Per-axis coverage: X/Y/Z each independently attenuated based on
-                // what partial blocks lie between the explosion and the TNT.
-                // Ladders only attenuate their perpendicular axis; other blocks
-                // attenuate all axes proportionally.
-                Vector axisCov = rayMarchAxisCoverage(
-                        explosionLoc,
-                        tnt.getLocation().add(0, 0.49, 0));
-
-                double expX = 1.0 - axisCov.getX();
-                double expY = 1.0 - axisCov.getY();
-                double expZ = 1.0 - axisCov.getZ();
-
-                // Only bother if at least one axis has meaningful attenuation
-                if (expX >= 1.0 - 1e-3 && expY >= 1.0 - 1e-3 && expZ >= 1.0 - 1e-3) continue;
-
-                // New velocity = preExplosion + delta * per-axis-exposure
-                Vector newVel = preVel.clone().add(new Vector(
-                        delta.getX() * expX,
-                        delta.getY() * expY,
-                        delta.getZ() * expZ));
-
-                // Sync our velocity record so the next physics tick has a good baseline.
-                syncVelocityFromExternal(tnt.getUniqueId(), newVel);
-                tnt.setVelocity(newVel);
-            }
-        }, 1L);
     }
 
     /**
@@ -925,8 +1042,12 @@ public class TNTPhysicsListener implements Listener {
         if (length < 0.01) return new Vector(0, 0, 0);
         dir.normalize();
 
-        // Exclude the final block so back-side stoppers do not penalise the target.
-        double sampleLength = Math.max(0.0, length - 1.0);
+        // Exclude only the last 0.3 blocks so a stopper block coincident with the
+        // target position does not penalise it, but ladders immediately adjacent to
+        // the target (which is the common cannon stopper geometry) ARE sampled.
+        // The old 1.0-block exclusion was too aggressive: it caused ladders right
+        // next to target TNT to be completely skipped, breaking ladder exposure.
+        double sampleLength = Math.max(0.0, length - 0.3);
         if (sampleLength < 0.01) return new Vector(0, 0, 0);
 
         int totalSamples = Math.max(2, (int) (sampleLength * EXPOSURE_SAMPLES_PER_BLOCK));

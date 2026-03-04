@@ -23,24 +23,25 @@ import java.util.Map;
  * the vanilla off-center spawn position from causing the TNT hitbox to
  * clip into adjacent blocks (a common cannoning bug).
  *
- * Also prevents the dispenser from firing more than once per rising redstone
- * edge. Cancelling BlockDispenseEvent does not update the dispenser's internal
- * "has fired" state, so subsequent block updates in the same pulse can re-trigger
- * the event. A wall-clock cooldown (immune to TPS lag) fixes this.
+ * Also prevents the dispenser from firing more than once per game tick on a
+ * single redstone pulse.  Cancelling BlockDispenseEvent does not update the
+ * dispenser's internal "has fired" state, so update-order chaining in the
+ * same tick can re-trigger the event.  We suppress re-fires only within the
+ * SAME server tick (using Bukkit.getCurrentTick()), which means a dispenser
+ * that receives a legitimately new redstone HIGH signal one or more ticks
+ * later fires correctly — this is essential for multi-pulse cannon sequences.
  */
 public class DispenserTNTListener implements Listener {
-
-    // 150 ms window — covers all same-pulse re-triggers regardless of TPS
-    private static final long COOLDOWN_MS = 150L;
 
     private final JavaPlugin plugin;
     private final boolean enabled;
 
     /**
-     * Maps dispenser location key → System.currentTimeMillis() of last fire.
-     * Cleared on falling redstone edge or after COOLDOWN_MS has elapsed.
+     * Maps dispenser location key → server game tick on which it last fired.
+     * Cleared on falling redstone edge.  We suppress re-fires only within the
+     * same tick so that intentional multi-delay sequences work correctly.
      */
-    private final Map<String, Long> lastFiredAt = new HashMap<>();
+    private final Map<String, Integer> lastFiredTick = new HashMap<>();
 
     public DispenserTNTListener(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -48,13 +49,13 @@ public class DispenserTNTListener implements Listener {
     }
 
     /**
-     * Clears the per-dispenser cooldown when the redstone signal drops to zero.
+     * Clears the per-dispenser tick record when the redstone signal drops to zero.
      * This ensures the next rising edge is always treated as a fresh activation.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onRedstoneChange(BlockRedstoneEvent event) {
         if (event.getNewCurrent() == 0) {
-            lastFiredAt.remove(blockKey(event.getBlock()));
+            lastFiredTick.remove(blockKey(event.getBlock()));
         }
     }
 
@@ -68,10 +69,13 @@ public class DispenserTNTListener implements Listener {
 
         String key = blockKey(block);
 
-        // If this dispenser fired recently (within COOLDOWN_MS wall-clock time), suppress.
-        long now = System.currentTimeMillis();
-        Long lastTime = lastFiredAt.get(key);
-        if (lastTime != null && (now - lastTime) < COOLDOWN_MS) {
+        // Suppress duplicate fires that happen in the SAME server tick.
+        // Using game tick (not wall-clock) is critical: a cannon may intentionally
+        // activate the same dispenser on two consecutive ticks (50 ms each), which
+        // a wall-clock cooldown of >50 ms would incorrectly suppress.
+        int currentTick = plugin.getServer().getCurrentTick();
+        Integer firedTick = lastFiredTick.get(key);
+        if (firedTick != null && firedTick == currentTick) {
             event.setCancelled(true);
             return;
         }
@@ -83,23 +87,65 @@ public class DispenserTNTListener implements Listener {
         // Cancel the vanilla dispense so we control the spawn
         event.setCancelled(true);
 
-        // Mark this dispenser as fired with the current wall-clock time.
-        // Cleared when redstone drops to zero or after COOLDOWN_MS has elapsed.
-        lastFiredAt.put(key, now);
+        // Record the tick this dispenser fired so same-tick re-triggers are suppressed.
+        lastFiredTick.put(key, currentTick);
 
         // Manually consume one TNT from the dispenser inventory
         consumeOneTNT(dispenserState);
 
-        // Determine the block directly in front of the dispenser
+        // Determine the block directly in front of the dispenser.
         Block targetBlock = block.getRelative(facing);
 
-        // Spawn TNT exactly at the center of that block with zero velocity.
+        // If the target block is solid (e.g. glass separator between cannon pots)
+        // we must find a passable block to spawn the TNT in.
+        //
+        // Two-strategy search:
+        //  1. Scan further in the FACING direction — handles horizontal dispensers
+        //     where the glass is directly in front and the water pot is at the same Y.
+        //  2. Scan DOWNWARD from the target block — handles designs where the glass
+        //     separator sits at the dispenser's level and the water pot is one block
+        //     below (common in vertical top-down cannons).
+        Block spawnBlock = null;
+        if (targetBlock.isPassable()) {
+            spawnBlock = targetBlock;
+        } else {
+            // Strategy 1: continue in the facing direction past the solid block.
+            Block next = targetBlock.getRelative(facing);
+            for (int i = 0; i < 4; i++) {
+                if (next.isPassable()) {
+                    spawnBlock = next;
+                    break;
+                }
+                next = next.getRelative(facing);
+            }
+            // Strategy 2 (fallback): scan downward from the solid target block.
+            // This covers layouts where the water pot is below the glass separator
+            // that the dispenser is aimed at.
+            if (spawnBlock == null) {
+                Block below = targetBlock.getRelative(BlockFace.DOWN);
+                for (int i = 0; i < 4; i++) {
+                    if (below.isPassable()) {
+                        spawnBlock = below;
+                        break;
+                    }
+                    below = below.getRelative(BlockFace.DOWN);
+                }
+            }
+            // Final fallback: use the target block itself — the entity will
+            // be inside a solid block, but vanilla's push-out will move it free.
+            if (spawnBlock == null) {
+                spawnBlock = targetBlock;
+            }
+        }
+
+        // Spawn TNT exactly at the center of the chosen block with zero velocity.
         // Zero velocity prevents the hitbox from crossing into any adjacent block
         // on the first tick. Water flow or other mechanics will apply forces after.
         int fuseTicks = plugin.getConfig().getInt("cannoning.tnt-fuse-ticks", 80);
 
-        targetBlock.getWorld().spawn(
-                targetBlock.getLocation().add(0.5, 0.0, 0.5),
+        final Block finalSpawnBlock = spawnBlock;
+        finalSpawnBlock.getWorld().spawn(
+                finalSpawnBlock.getLocation().add(0.5, 0.0, 0.5),
                 TNTPrimed.class,
                 tnt -> {
                     tnt.setVelocity(new Vector(0, 0, 0));
