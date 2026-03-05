@@ -616,16 +616,21 @@ public class TNTPhysicsListener implements Listener {
      * which is correct â€” cannon pots are water-filled.
      */
     private boolean isPositionBlocked(World world, double cx, double cy, double cz) {
-        final double HALF = 0.49;
+        // TNT entity: X/Z are the horizontal centre of the 0.98-wide entity.
+        //             Y is the FEET (bottom), height is 0.98.
+        // Previous code incorrectly centred the Y axis, causing the sweep to
+        // check y-0.49 to y+0.49 instead of the actual y to y+0.98 range.
+        final double HALF_XZ = 0.49;
+        final double HEIGHT  = 0.98;
         BoundingBox tntBB = new BoundingBox(
-                cx - HALF, cy - HALF, cz - HALF,
-                cx + HALF, cy + HALF, cz + HALF);
-        int minX = (int) Math.floor(cx - HALF);
-        int maxX = (int) Math.floor(cx + HALF);
-        int minY = (int) Math.floor(cy - HALF);
-        int maxY = (int) Math.floor(cy + HALF);
-        int minZ = (int) Math.floor(cz - HALF);
-        int maxZ = (int) Math.floor(cz + HALF);
+                cx - HALF_XZ, cy,          cz - HALF_XZ,
+                cx + HALF_XZ, cy + HEIGHT, cz + HALF_XZ);
+        int minX = (int) Math.floor(cx - HALF_XZ);
+        int maxX = (int) Math.floor(cx + HALF_XZ);
+        int minY = (int) Math.floor(cy);
+        int maxY = (int) Math.floor(cy + HEIGHT);
+        int minZ = (int) Math.floor(cz - HALF_XZ);
+        int maxZ = (int) Math.floor(cz + HALF_XZ);
         for (int bx = minX; bx <= maxX; bx++) {
             for (int by = minY; by <= maxY; by++) {
                 for (int bz = minZ; bz <= maxZ; bz++) {

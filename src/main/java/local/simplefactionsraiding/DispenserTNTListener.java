@@ -96,46 +96,75 @@ public class DispenserTNTListener implements Listener {
         // Determine the block directly in front of the dispenser.
         Block targetBlock = block.getRelative(facing);
 
-        // If the target block is solid (e.g. glass separator between cannon pots)
-        // we must find a passable block to spawn the TNT in.
+        // Search for the best block to spawn TNT in, prioritising cannon water pots.
         //
-        // Two-strategy search:
-        //  1. Scan further in the FACING direction — handles horizontal dispensers
-        //     where the glass is directly in front and the water pot is at the same Y.
-        //  2. Scan DOWNWARD from the target block — handles designs where the glass
-        //     separator sits at the dispenser's level and the water pot is one block
-        //     below (common in vertical top-down cannons).
+        // Cannon water pots are always water or waterlogged; spawning in any OTHER
+        // passable block (e.g. an air gap outside the cannon wall) would place the
+        // TNT outside the structure.  We therefore search specifically for water
+        // rather than generic "passable" blocks.
+        //
+        // Search order:
+        //  1. Target block itself contains water → exact match, use it.
+        //  2. Scan up to 8 blocks in the FACING direction for water → handles
+        //     thick glass separators between dispenser and water pot.
+        //  3. Scan up to 4 blocks DOWNWARD from the target block for water →
+        //     handles vertical top-down cannon designs where the pot is below.
+        //  4. Nearest passable block in facing direction (up to 8) → open-air
+        //     cannon designs with no water.
+        //  5. Target block itself (solid) → entity lands in glass; vanilla
+        //     push-out will resolve it as a last resort.
         Block spawnBlock = null;
-        if (targetBlock.isPassable()) {
+
+        // Strategy 1: target block already has water.
+        if (isWaterBlock(targetBlock)) {
             spawnBlock = targetBlock;
-        } else {
-            // Strategy 1: continue in the facing direction past the solid block.
+        }
+
+        // Strategy 2: scan facing direction for a water block (skip solid sepa­rators).
+        if (spawnBlock == null) {
             Block next = targetBlock.getRelative(facing);
+            for (int i = 0; i < 8; i++) {
+                if (isWaterBlock(next)) {
+                    spawnBlock = next;
+                    break;
+                }
+                // Stop scanning when we leave solid material — another patch of
+                // solid likely means we have left the cannon body entirely.
+                if (next.isPassable() && !isWaterBlock(next)) {
+                    break; // hit open air beyond the wall — do not go further
+                }
+                next = next.getRelative(facing);
+            }
+        }
+
+        // Strategy 3: scan downward from targetBlock for a water block.
+        if (spawnBlock == null) {
+            Block below = targetBlock.getRelative(BlockFace.DOWN);
             for (int i = 0; i < 4; i++) {
+                if (isWaterBlock(below)) {
+                    spawnBlock = below;
+                    break;
+                }
+                below = below.getRelative(BlockFace.DOWN);
+            }
+        }
+
+        // Strategy 4: nearest passable (non-water) block in facing direction
+        // — fallback for open-air cannon designs.
+        if (spawnBlock == null) {
+            Block next = targetBlock;
+            for (int i = 0; i < 8; i++) {
                 if (next.isPassable()) {
                     spawnBlock = next;
                     break;
                 }
                 next = next.getRelative(facing);
             }
-            // Strategy 2 (fallback): scan downward from the solid target block.
-            // This covers layouts where the water pot is below the glass separator
-            // that the dispenser is aimed at.
-            if (spawnBlock == null) {
-                Block below = targetBlock.getRelative(BlockFace.DOWN);
-                for (int i = 0; i < 4; i++) {
-                    if (below.isPassable()) {
-                        spawnBlock = below;
-                        break;
-                    }
-                    below = below.getRelative(BlockFace.DOWN);
-                }
-            }
-            // Final fallback: use the target block itself — the entity will
-            // be inside a solid block, but vanilla's push-out will move it free.
-            if (spawnBlock == null) {
-                spawnBlock = targetBlock;
-            }
+        }
+
+        // Strategy 5: last resort — use target block (push-out will handle solids).
+        if (spawnBlock == null) {
+            spawnBlock = targetBlock;
         }
 
         // Spawn TNT exactly at the center of the chosen block with zero velocity.
@@ -153,6 +182,20 @@ public class DispenserTNTListener implements Listener {
                     tnt.setSilent(true); // suppress hissing packet spam with many TNT entities
                 }
         );
+    }
+
+    /**
+     * Returns true if the block contains water (source, flowing, or waterlogged).
+     * Cannon water pots may use waterlogged blocks (e.g. waterlogged slabs or
+     * trapdoors) which are solid but still count as water for physics purposes.
+     */
+    private static boolean isWaterBlock(Block block) {
+        if (block.getType() == Material.WATER) return true;
+        org.bukkit.block.data.BlockData data = block.getBlockData();
+        if (data instanceof org.bukkit.block.data.Waterlogged wl) {
+            return wl.isWaterlogged();
+        }
+        return false;
     }
 
     private static String blockKey(Block block) {
