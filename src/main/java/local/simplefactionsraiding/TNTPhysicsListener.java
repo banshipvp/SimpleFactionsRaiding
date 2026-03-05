@@ -300,18 +300,33 @@ public class TNTPhysicsListener implements Listener {
             tnt.setVelocity(new Vector(0, 0, 0));
             prevVel.put(uuid, new Vector(0, 0, 0));
 
-            // Re-center the entity at the floor-center of its current block.
-            // Vanilla dispensers spawn TNT at an offset from the dispenser face
-            // (e.g. center + facing * 0.6 + random jitter) which can leave the
-            // bounding box clipping into an adjacent block.  Teleporting to the
-            // exact floor-center (X+0.5, Y+0.0, Z+0.5) of the block the entity
-            // is currently in guarantees the 0.98x0.98 bbox fits cleanly inside
-            // the water or air block with no overlap above or below.
-            // We only do this for non-solid blocks (water, air) — if somehow the
-            // entity spawned inside glass, leave it to vanilla's push-out logic.
+            // Re-centre the entity inside its current block — or teleport it
+            // out if it is inside a solid (e.g. glass separator that no search
+            // strategy in DispenserTNTListener could find a better block for).
             Block entBlock = tnt.getLocation().getBlock();
-            if (!entBlock.getType().isSolid()) {
-                Location blockCenter = entBlock.getLocation().add(0.5, 0.0, 0.5);
+            if (entBlock.getType().isSolid() && !isInWater(entBlock)) {
+                // Entity is inside a full solid block.  Vanilla's push-out code
+                // runs in the SAME tick and moves the entity upward (toward open
+                // air above), so any downward escape velocity we set gets
+                // immediately countered — producing the visible "snap back up"
+                // glitch.  Instead, teleport the entity to the nearest safe
+                // (non-solid) neighbour block right now.
+                Block safe = findSafeNeighbour(entBlock);
+                if (safe != null) {
+                    Location safeLoc = safe.getLocation().add(0.5, 0.5, 0.5);
+                    tnt.teleport(safeLoc);
+                    entBlock = safe;
+                }
+                // Fall through: safe may still be non-water; let normal
+                // non-water gravity take over via vanilla physics below.
+            } else {
+                // Teleport to the VERTICAL CENTRE of the block (Y+0.5).
+                // Spawning at the floor (Y+0.0) puts feet at the exact block
+                // boundary; one tick of vanilla gravity shifts feet to Y-0.04
+                // which floor()-maps to blockY-1, making isTNTInWater return
+                // false and allowing the water pin to lapse.  Y+0.5 gives a
+                // 0.5-block margin so detection is rock-solid.
+                Location blockCenter = entBlock.getLocation().add(0.5, 0.5, 0.5);
                 tnt.teleport(blockCenter);
             }
 
@@ -363,6 +378,25 @@ public class TNTPhysicsListener implements Listener {
         Vector prev = prevVel.getOrDefault(uuid, new Vector(0, 0, 0));
 
         boolean inWater = isTNTInWater(tnt);
+
+        // ── Anchor-block water guard ──────────────────────────────────────────────
+        // If vanilla physics ran before our tick and noPhysics reflection failed
+        // (different field name, module access denied), the entity may drift slightly
+        // outside the water block its anchor lives in.  isTNTInWater() then returns
+        // false → the pin lapses → next tick it drifts further → runaway Y descent.
+        // Guard: also check the ANCHOR block directly.  If the anchor is still water
+        // we force inWater=true so the pin always snaps the entity back to the
+        // correct Y — completely immune to positional drift between ticks.
+        double[] existingPin = pinnedPos.get(uuid);
+        if (!inWater && existingPin != null && !launchedTNT.contains(uuid)) {
+            Block anchorBlock = tnt.getWorld().getBlockAt(
+                    (int) Math.floor(existingPin[0]),
+                    (int) Math.floor(existingPin[1]),
+                    (int) Math.floor(existingPin[2]));
+            if (isInWater(anchorBlock)) {
+                inWater = true;
+            }
+        }
 
         // noPhysics=true while in water: vanilla Entity.move() is skipped entirely,
         // so water buoyancy, flow, and gravity produce zero position change.
@@ -535,7 +569,7 @@ public class TNTPhysicsListener implements Listener {
                 // In AIR, not explosion-launched: pass vanilla's computed velocity
                 // through (preserves prime momentum and gravity) then apply partial-
                 // block collision on top.  Do NOT zero X/Z — that would kill the
-                // initial prime-momentum jump every cannon cannon designer relies on.
+                // initial prime-momentum jump every cannon designer relies on.
                 nx = actualVel.getX();
                 ny = actualVel.getY();
                 nz = actualVel.getZ();
@@ -615,11 +649,27 @@ public class TNTPhysicsListener implements Listener {
      * Water blocks are NOT solid so they are transparently passed through,
      * which is correct â€” cannon pots are water-filled.
      */
+    /**
+     * Returns true if a block material is a glass-type block used as a cannon separator.
+     *
+     * Glass blocks (full, tinted, stained, pane variants) are used in all standard cannon
+     * designs as dividers between sections.  Explosion-launched TNT travelling through a
+     * water-filled barrel must be able to pass through these freely — stopping at a glass
+     * wall would break every cannon design.  The TNT still explodes normally at the end of
+     * its fuse; glass is destroyed by the blast wave, not by the flying entity coliding.
+     */
+    private static boolean isGlass(Material m) {
+        String n = m.name();
+        return n.equals("GLASS")
+            || n.equals("TINTED_GLASS")
+            || n.endsWith("_STAINED_GLASS")
+            || n.endsWith("_GLASS_PANE")
+            || n.equals("GLASS_PANE");
+    }
+
     private boolean isPositionBlocked(World world, double cx, double cy, double cz) {
         // TNT entity: X/Z are the horizontal centre of the 0.98-wide entity.
         //             Y is the FEET (bottom), height is 0.98.
-        // Previous code incorrectly centred the Y axis, causing the sweep to
-        // check y-0.49 to y+0.49 instead of the actual y to y+0.98 range.
         final double HALF_XZ = 0.49;
         final double HEIGHT  = 0.98;
         BoundingBox tntBB = new BoundingBox(
@@ -637,6 +687,9 @@ public class TNTPhysicsListener implements Listener {
                     Block block = world.getBlockAt(bx, by, bz);
                     Material m = block.getType();
                     if (m.isAir() || m == Material.WATER || m == Material.LAVA) continue;
+                    // Glass is a cannon separator — TNT passes through it freely.
+                    // Block collision at glass would stop cannon shots inside the barrel.
+                    if (isGlass(m)) continue;
                     if (PARTIAL_MATERIALS.contains(m)) {
                         BoundingBox blockBB = block.getBoundingBox();
                         if (blockBB.getVolume() > 1e-6 && tntBB.overlaps(blockBB)) return true;
@@ -655,6 +708,26 @@ public class TNTPhysicsListener implements Listener {
             return wl.isWaterlogged();
         }
         return false;
+    }
+
+    /**
+     * Finds the nearest non-solid, non-air-only neighbour of {@code origin} to
+     * use as a safe teleport destination when TNT is stuck inside a solid block.
+     * Priority order: below → same level (4 cardinals) → above.
+     * Returns {@code null} if every neighbour is also solid (should never happen
+     * in a real cannon, but handled gracefully).
+     */
+    private static Block findSafeNeighbour(Block origin) {
+        BlockFace[] order = {
+            BlockFace.DOWN,
+            BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST,
+            BlockFace.UP
+        };
+        for (BlockFace face : order) {
+            Block neighbour = origin.getRelative(face);
+            if (!neighbour.getType().isSolid()) return neighbour;
+        }
+        return null;
     }
 
     /**

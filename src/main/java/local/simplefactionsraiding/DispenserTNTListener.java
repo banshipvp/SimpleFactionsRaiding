@@ -120,18 +120,15 @@ public class DispenserTNTListener implements Listener {
             spawnBlock = targetBlock;
         }
 
-        // Strategy 2: scan facing direction for a water block (skip solid sepa­rators).
+        // Strategy 2: scan facing direction for a water block.
+        // Scan through ANYTHING (glass, air gaps, etc.) — cannon internals
+        // often have air gaps between the glass separator and the water pot.
         if (spawnBlock == null) {
             Block next = targetBlock.getRelative(facing);
             for (int i = 0; i < 8; i++) {
                 if (isWaterBlock(next)) {
                     spawnBlock = next;
                     break;
-                }
-                // Stop scanning when we leave solid material — another patch of
-                // solid likely means we have left the cannon body entirely.
-                if (next.isPassable() && !isWaterBlock(next)) {
-                    break; // hit open air beyond the wall — do not go further
                 }
                 next = next.getRelative(facing);
             }
@@ -162,19 +159,35 @@ public class DispenserTNTListener implements Listener {
             }
         }
 
-        // Strategy 5: last resort — use target block (push-out will handle solids).
+        // Strategy 5: last resort — use target block.
         if (spawnBlock == null) {
             spawnBlock = targetBlock;
         }
 
-        // Spawn TNT exactly at the center of the chosen block with zero velocity.
-        // Zero velocity prevents the hitbox from crossing into any adjacent block
-        // on the first tick. Water flow or other mechanics will apply forces after.
+        // If the chosen block is solid (glass separator with no passable/water
+        // block found by earlier strategies), scan downward for a passable block
+        // so the TNT can fall out naturally instead of sitting inside glass.
+        if (spawnBlock.getType().isSolid() && !isWaterBlock(spawnBlock)) {
+            Block below = spawnBlock.getRelative(BlockFace.DOWN);
+            for (int i = 0; i < 4; i++) {
+                if (below.isPassable()) {
+                    spawnBlock = below;
+                    break;
+                }
+                below = below.getRelative(BlockFace.DOWN);
+            }
+        }
+
+        // Spawn TNT at the VERTICAL CENTRE of the chosen block (Y+0.5).
+        // Spawning at the floor (Y+0.0) puts the entity right at the block
+        // boundary — one tick of vanilla gravity moves it to Y-0.04 which
+        // floor()-maps to the block below, making isTNTInWater return false
+        // and allowing the pin to lapse.  Y+0.5 provides 0.5-block margin.
         int fuseTicks = plugin.getConfig().getInt("cannoning.tnt-fuse-ticks", 80);
 
         final Block finalSpawnBlock = spawnBlock;
         finalSpawnBlock.getWorld().spawn(
-                finalSpawnBlock.getLocation().add(0.5, 0.0, 0.5),
+                finalSpawnBlock.getLocation().add(0.5, 0.5, 0.5),
                 TNTPrimed.class,
                 tnt -> {
                     tnt.setVelocity(new Vector(0, 0, 0));
