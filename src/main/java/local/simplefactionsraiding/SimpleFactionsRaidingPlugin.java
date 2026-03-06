@@ -81,6 +81,8 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         RestartAdminCommand restartAdminCommand = new RestartAdminCommand(autoRestartManager);
         getCommand("restartnow").setExecutor(restartAdminCommand);
         getCommand("forcerestart").setExecutor(restartAdminCommand);
+        getCommand("forcereboot").setExecutor(restartAdminCommand);
+        getCommand("reboot").setExecutor(new RebootCommand(autoRestartManager));
 
         // /pastecannon — WorldEdit schematic paste for cannon testing
         if (getServer().getPluginManager().getPlugin("WorldEdit") != null) {

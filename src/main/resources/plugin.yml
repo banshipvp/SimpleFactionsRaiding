@@ -69,6 +69,14 @@ commands:
     description: Force immediate server restart
     usage: /forcerestart
     permission: simplefactionsraiding.admin.forcerestart
+  forcereboot:
+    description: Force server reboot in 60 seconds
+    usage: /forcereboot
+    permission: simplefactionsraiding.admin.restart
+  reboot:
+    description: Check time until next scheduled server reboot
+    usage: /reboot
+    default: true
   spawn:
     description: Teleport to spawn location
     usage: /spawn

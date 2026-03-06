@@ -121,7 +121,7 @@ restart:
   enabled: true
 
   # Restart every X minutes.
-  interval-minutes: 180
+  interval-minutes: 720
 
   # Broadcast warning at these remaining seconds.
   warning-seconds:

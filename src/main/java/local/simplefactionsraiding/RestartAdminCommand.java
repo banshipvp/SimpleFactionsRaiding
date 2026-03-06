@@ -16,14 +16,14 @@ public class RestartAdminCommand implements CommandExecutor {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         String cmd = command.getName().toLowerCase();
 
-        if (cmd.equals("restartnow")) {
+        if (cmd.equals("restartnow") || cmd.equals("forcereboot")) {
             if (!sender.hasPermission("simplefactionsraiding.admin.restart")) {
                 sender.sendMessage("§cYou don't have permission.");
                 return true;
             }
 
             autoRestartManager.startManualRestart(60, sender.getName());
-            sender.sendMessage("§aRestart countdown started for 60 seconds.");
+            sender.sendMessage("§aReboot countdown started — server will reboot in §e60 seconds§a.");
             return true;
         }
 

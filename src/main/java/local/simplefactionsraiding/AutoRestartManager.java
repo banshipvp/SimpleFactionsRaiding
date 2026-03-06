@@ -87,6 +87,18 @@ public class AutoRestartManager {
         secondsLeft = autoEnabled ? intervalSeconds : -1L;
     }
 
+    public long getSecondsLeft() {
+        return secondsLeft;
+    }
+
+    public long getIntervalSeconds() {
+        return intervalSeconds;
+    }
+
+    public boolean isAutoEnabled() {
+        return autoEnabled;
+    }
+
     public void startManualRestart(int seconds, String initiator) {
         ensureTicker();
         this.manualRestartActive = true;
