@@ -69,13 +69,18 @@ commands:
     description: Force immediate server restart
     usage: /forcerestart
     permission: simplefactionsraiding.admin.forcerestart
-  forcereboot:
+  rebootforce:
     description: Force server reboot in 60 seconds
-    usage: /forcereboot
+    usage: /rebootforce
+    aliases: [forcereboot]
     permission: simplefactionsraiding.admin.restart
   reboot:
-    description: Check time until next scheduled server reboot
+    description: Check scheduled reboot status
     usage: /reboot
+    default: true
+  staff:
+    description: Show online staff members
+    usage: /staff
     default: true
   spawn:
     description: Teleport to spawn location
@@ -87,6 +92,9 @@ commands:
     permission: simplefactionsraiding.setspawn
 
 permissions:
+  simplefactionsraiding.admin:
+    description: Allows raid admin controls (/raid start|stop)
+    default: op
   simplefactionsraiding.pastecannon:
     description: Allows pasting schematics with /pastecannon
     default: op

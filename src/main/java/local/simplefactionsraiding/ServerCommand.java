@@ -1,5 +1,8 @@
 package local.simplefactionsraiding;
 
+import local.simplefactions.HubQueueManager;
+import local.simplefactions.SimpleFactionsPlugin;
+import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -10,9 +13,11 @@ import java.util.Locale;
 public class ServerCommand implements CommandExecutor {
 
     private final MultiWorldManager multiWorldManager;
+    private final SimpleFactionsPlugin simpleFactionsPlugin;
 
-    public ServerCommand(MultiWorldManager multiWorldManager) {
+    public ServerCommand(MultiWorldManager multiWorldManager, SimpleFactionsPlugin simpleFactionsPlugin) {
         this.multiWorldManager = multiWorldManager;
+        this.simpleFactionsPlugin = simpleFactionsPlugin;
     }
 
     @Override
@@ -33,6 +38,10 @@ public class ServerCommand implements CommandExecutor {
             return true;
         }
 
+        if (tryQueue(player)) {
+            return true;
+        }
+
         boolean ok = multiWorldManager.teleportToFactionServer(player);
         if (!ok) {
             player.sendMessage("§cFaction Server world is unavailable.");
@@ -40,6 +49,25 @@ public class ServerCommand implements CommandExecutor {
         }
 
         player.sendMessage("§aConnected to §eFaction Server§a.");
+        return true;
+    }
+
+    private boolean tryQueue(Player player) {
+        if (simpleFactionsPlugin == null) return false;
+        HubQueueManager queue = simpleFactionsPlugin.getHubQueueManager();
+        if (queue == null) return false;
+
+        boolean added = queue.enqueue(player);
+        if (added) {
+            int pos = queue.getPosition(player.getUniqueId());
+            int size = queue.size();
+            player.sendMessage("§a✔ You joined the §6Factions §aqueue!");
+            player.sendMessage("§e  Position: §f" + pos + "§e/§f" + size);
+        } else {
+            int pos = queue.getPosition(player.getUniqueId());
+            int size = queue.size();
+            player.sendMessage("§eYou are already in the queue at position §f" + pos + "§e/§f" + size + "§e.");
+        }
         return true;
     }
 }

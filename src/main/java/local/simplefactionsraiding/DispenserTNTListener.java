@@ -33,6 +33,15 @@ import java.util.Map;
  */
 public class DispenserTNTListener implements Listener {
 
+    /** One redstone tick in game ticks. */
+    private static final int OBSERVER_PULSE_TICKS = 2;
+
+    /**
+     * TNT entity location uses feet Y. A +0.01 offset centres the 0.98-tall
+     * hitbox inside a block and avoids clipping into floor/ceiling boundaries.
+     */
+    private static final double TNT_FEET_CENTER_OFFSET = 0.01;
+
     private final JavaPlugin plugin;
     private final boolean enabled;
 
@@ -54,8 +63,11 @@ public class DispenserTNTListener implements Listener {
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onRedstoneChange(BlockRedstoneEvent event) {
+        String key = blockKey(event.getBlock());
         if (event.getNewCurrent() == 0) {
-            lastFiredTick.remove(blockKey(event.getBlock()));
+            // Falling edge: clear state so next front update/rising edge can fire.
+            lastFiredTick.remove(key);
+            return;
         }
     }
 
@@ -75,7 +87,7 @@ public class DispenserTNTListener implements Listener {
         // a wall-clock cooldown of >50 ms would incorrectly suppress.
         int currentTick = plugin.getServer().getCurrentTick();
         Integer firedTick = lastFiredTick.get(key);
-        if (firedTick != null && firedTick == currentTick) {
+        if (firedTick != null && (currentTick - firedTick) < OBSERVER_PULSE_TICKS) {
             event.setCancelled(true);
             return;
         }
@@ -83,12 +95,6 @@ public class DispenserTNTListener implements Listener {
         Dispenser dispenserState = (Dispenser) block.getState();
         BlockFace facing = getFacing(block);
         if (facing == null) return;
-
-        // Cancel the vanilla dispense so we control the spawn
-        event.setCancelled(true);
-
-        // Record the tick this dispenser fired so same-tick re-triggers are suppressed.
-        lastFiredTick.put(key, currentTick);
 
         // Manually consume one TNT from the dispenser inventory
         consumeOneTNT(dispenserState);
@@ -146,37 +152,30 @@ public class DispenserTNTListener implements Listener {
             }
         }
 
-        // Strategy 4: nearest passable (non-water) block in facing direction
-        // — fallback for open-air cannon designs.
+        // Strategy 4: direct-front passable fallback only.
+        // Never scan ahead for arbitrary passable blocks; that can spawn TNT
+        // outside cannon geometry when odd redstone/observer updates fire.
         if (spawnBlock == null) {
-            Block next = targetBlock;
-            for (int i = 0; i < 8; i++) {
-                if (next.isPassable()) {
-                    spawnBlock = next;
-                    break;
-                }
-                next = next.getRelative(facing);
+            if (targetBlock.isPassable()) {
+                spawnBlock = targetBlock;
             }
         }
 
-        // Strategy 5: last resort — use target block.
+        // Strategy 5: if no safe custom location is found, let vanilla handle it.
         if (spawnBlock == null) {
-            spawnBlock = targetBlock;
+            return;
         }
 
-        // If the chosen block is solid (glass separator with no passable/water
-        // block found by earlier strategies), scan downward for a passable block
-        // so the TNT can fall out naturally instead of sitting inside glass.
+        // If the chosen block is still solid and non-water, hand off to vanilla.
         if (spawnBlock.getType().isSolid() && !isWaterBlock(spawnBlock)) {
-            Block below = spawnBlock.getRelative(BlockFace.DOWN);
-            for (int i = 0; i < 4; i++) {
-                if (below.isPassable()) {
-                    spawnBlock = below;
-                    break;
-                }
-                below = below.getRelative(BlockFace.DOWN);
-            }
+            return;
         }
+
+        // Cancel the vanilla dispense so we control the spawn
+        event.setCancelled(true);
+
+        // Record the tick this dispenser fired so duplicate re-triggers are suppressed.
+        lastFiredTick.put(key, currentTick);
 
         // Spawn TNT at the VERTICAL CENTRE of the chosen block (Y+0.5).
         // Spawning at the floor (Y+0.0) puts the entity right at the block
@@ -187,7 +186,7 @@ public class DispenserTNTListener implements Listener {
 
         final Block finalSpawnBlock = spawnBlock;
         finalSpawnBlock.getWorld().spawn(
-                finalSpawnBlock.getLocation().add(0.5, 0.5, 0.5),
+            finalSpawnBlock.getLocation().add(0.5, TNT_FEET_CENTER_OFFSET, 0.5),
                 TNTPrimed.class,
                 tnt -> {
                     tnt.setVelocity(new Vector(0, 0, 0));

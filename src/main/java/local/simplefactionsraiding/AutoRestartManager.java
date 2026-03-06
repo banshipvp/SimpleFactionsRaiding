@@ -1,6 +1,7 @@
 package local.simplefactionsraiding;
 
 import org.bukkit.Bukkit;
+import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -19,6 +20,7 @@ public class AutoRestartManager {
     private boolean autoEnabled;
     private boolean manualRestartActive;
     private String initiatedBy = "System";
+    private boolean shutdownOnExecute = true;
 
     public AutoRestartManager(SimpleFactionsRaidingPlugin plugin, MultiWorldManager multiWorldManager) {
         this.plugin = plugin;
@@ -81,10 +83,47 @@ public class AutoRestartManager {
     private void executeRestart() {
         Bukkit.broadcastMessage("§4§lSERVER REBOOT");
         Bukkit.broadcastMessage("§cServer is rebooting now...");
-        Bukkit.getScheduler().runTaskLater(plugin, Bukkit::shutdown, 20L);
-        manualRestartActive = false;
-        initiatedBy = "System";
-        secondsLeft = autoEnabled ? intervalSeconds : -1L;
+
+        if (shutdownOnExecute) {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    Bukkit.getServer().savePlayers();
+                    Bukkit.getWorlds().forEach(world -> {
+                        try {
+                            world.save();
+                        } catch (Throwable ignored) {}
+                    });
+                } catch (Throwable ignored) {}
+
+                ConsoleCommandSender console = Bukkit.getConsoleSender();
+                boolean restartIssued = false;
+                try {
+                    restartIssued = Bukkit.dispatchCommand(console, "restart");
+                } catch (Throwable ignored) {}
+
+                if (!restartIssued) {
+                    plugin.getLogger().warning("Restart command was unavailable; falling back to shutdown.");
+                    Bukkit.shutdown();
+                    return;
+                }
+
+                Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                    if (Bukkit.getOnlinePlayers().isEmpty()) {
+                        Bukkit.shutdown();
+                    }
+                }, 100L);
+            });
+        } else {
+            for (Player player : Bukkit.getOnlinePlayers()) {
+                multiWorldManager.teleportToHub(player);
+                player.sendMessage("§aLive reboot complete. You remain connected in hub.");
+            }
+            Bukkit.broadcastMessage("§aLive reboot complete. Server stayed online.");
+            manualRestartActive = false;
+            initiatedBy = "System";
+            shutdownOnExecute = true;
+            secondsLeft = autoEnabled ? intervalSeconds : -1L;
+        }
     }
 
     public long getSecondsLeft() {
@@ -100,9 +139,14 @@ public class AutoRestartManager {
     }
 
     public void startManualRestart(int seconds, String initiator) {
+        startManualRestart(seconds, initiator, true);
+    }
+
+    public void startManualRestart(int seconds, String initiator, boolean shutdownServer) {
         ensureTicker();
         this.manualRestartActive = true;
         this.initiatedBy = initiator == null || initiator.isBlank() ? "Admin" : initiator;
+        this.shutdownOnExecute = shutdownServer;
 
         int safeSeconds = Math.max(5, seconds);
         broadcastRebootMessage(safeSeconds);
@@ -112,9 +156,14 @@ public class AutoRestartManager {
     public void forceRestartNow(String initiator) {
         this.manualRestartActive = true;
         this.initiatedBy = initiator == null || initiator.isBlank() ? "Admin" : initiator;
+        this.shutdownOnExecute = true;
         Bukkit.broadcastMessage("§4§lSERVER REBOOT");
         Bukkit.broadcastMessage("§cServer reboot forced by §e" + initiatedBy + "§c. Restarting immediately...");
         Bukkit.getScheduler().runTask(plugin, Bukkit::shutdown);
+    }
+
+    public void startLiveReboot(int seconds, String initiator) {
+        startManualRestart(seconds, initiator, false);
     }
 
     private void broadcastRebootMessage(int seconds) {

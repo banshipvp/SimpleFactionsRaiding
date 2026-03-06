@@ -58,6 +58,13 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class TNTPhysicsListener implements Listener {
 
+    /**
+     * TNT entity position is feet-based. A primed TNT hitbox is ~0.98 blocks tall,
+     * so placing feet at +0.01 centres the hitbox inside a 1x1x1 block with a tiny
+     * 0.01 margin top/bottom, avoiding clipping into floor or ceiling blocks.
+     */
+    private static final double TNT_FEET_CENTER_OFFSET = 0.01;
+
     // -----------------------------------------------------------------------
     // Configuration
     // -----------------------------------------------------------------------
@@ -85,6 +92,9 @@ public class TNTPhysicsListener implements Listener {
 
     /** Number of ray-march samples per block of distance for exposure. */
     private static final int EXPOSURE_SAMPLES_PER_BLOCK = 8;
+
+    /** Number of collision sweep checks per block of travel distance. */
+    private static final int SWEEP_STEPS_PER_BLOCK = 20;
 
     // -----------------------------------------------------------------------
     // Materials that trigger partial-block physics
@@ -228,6 +238,12 @@ public class TNTPhysicsListener implements Listener {
     private final Map<UUID, double[]> launchedPos = new HashMap<>();
 
     /**
+     * Last known collision-safe feet position {x, y, z} for each tracked TNT.
+     * Used as a hard fail-safe to prevent TNT from ending up inside walls.
+     */
+    private final Map<UUID, double[]> safePos = new HashMap<>();
+
+    /**
      * When true, TNT explosions are cancelled before they fire particles/sounds.
      * A simplified blast velocity is applied manually so cannon chains still work.
      * Toggle via /tntparticles.
@@ -299,6 +315,8 @@ public class TNTPhysicsListener implements Listener {
             // applying before our first per-tick handler runs.
             tnt.setVelocity(new Vector(0, 0, 0));
             prevVel.put(uuid, new Vector(0, 0, 0));
+            Location spawnLoc = tnt.getLocation();
+            safePos.put(uuid, new double[]{spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ()});
 
             // Re-centre the entity inside its current block — or teleport it
             // out if it is inside a solid (e.g. glass separator that no search
@@ -313,7 +331,7 @@ public class TNTPhysicsListener implements Listener {
                 // (non-solid) neighbour block right now.
                 Block safe = findSafeNeighbour(entBlock);
                 if (safe != null) {
-                    Location safeLoc = safe.getLocation().add(0.5, 0.5, 0.5);
+                    Location safeLoc = safe.getLocation().add(0.5, TNT_FEET_CENTER_OFFSET, 0.5);
                     tnt.teleport(safeLoc);
                     entBlock = safe;
                 }
@@ -326,24 +344,18 @@ public class TNTPhysicsListener implements Listener {
                 // which floor()-maps to blockY-1, making isTNTInWater return
                 // false and allowing the water pin to lapse.  Y+0.5 gives a
                 // 0.5-block margin so detection is rock-solid.
-                Location blockCenter = entBlock.getLocation().add(0.5, 0.5, 0.5);
+                Location blockCenter = entBlock.getLocation().add(0.5, TNT_FEET_CENTER_OFFSET, 0.5);
                 tnt.teleport(blockCenter);
             }
 
             // 4-second fuse (80 ticks) for all TNT entities.
             tnt.setFuseTicks(80);
 
-            // If the TNT is in water, pin it immediately.
+            // If the TNT is in water, record its in-water position for
+            // explosion-water suppression checks.
             if (isTNTInWater(tnt)) {
-                Location spawnLoc = tnt.getLocation();
-                pinnedPos.put(uuid, new double[]{spawnLoc.getX(), spawnLoc.getY(), spawnLoc.getZ()});
-                // noPhysics=true: vanilla Entity.move() is short-circuited entirely
-                // so buoyancy, water-current, and gravity produce no displacement.
-                // This is the AtlasSpigot equivalent of isPushedByFluid()=false.
-                // The per-tick teleport (below) is a belt-and-suspenders backup in
-                // case NMS reflection fails in this Paper build.
-                setNoPhysics(tnt, true);
-                tnt.setGravity(false);
+                Location inWaterLoc = tnt.getLocation();
+                pinnedPos.put(uuid, new double[]{inWaterLoc.getX(), inWaterLoc.getY(), inWaterLoc.getZ()});
             }
         }
     }
@@ -363,6 +375,7 @@ public class TNTPhysicsListener implements Listener {
                 launchedTNT.remove(uuid);
                 pinnedPos.remove(uuid);
                 launchedPos.remove(uuid);
+                safePos.remove(uuid);
                 return true; // remove stale
             }
             tickOneTNT((TNTPrimed) e);
@@ -372,38 +385,30 @@ public class TNTPhysicsListener implements Listener {
 
     private void tickOneTNT(TNTPrimed tnt) {
         UUID uuid = tnt.getUniqueId();
+        Location currentLoc = tnt.getLocation();
+
+        if (isPositionBlocked(tnt.getWorld(), currentLoc.getX(), currentLoc.getY(), currentLoc.getZ(), 0, 0, 0)) {
+            double[] safe = safePos.get(uuid);
+            if (safe != null) {
+                tnt.teleport(new Location(tnt.getWorld(), safe[0], safe[1], safe[2], currentLoc.getYaw(), currentLoc.getPitch()));
+            }
+
+            Vector zero = new Vector(0, 0, 0);
+            prevVel.put(uuid, zero);
+            tnt.setVelocity(zero);
+            launchedTNT.remove(uuid);
+            launchedPos.remove(uuid);
+            return;
+        }
+
+        safePos.put(uuid, new double[]{currentLoc.getX(), currentLoc.getY(), currentLoc.getZ()});
+
         // What vanilla actually set this tick (may be water-corrupted).
         Vector actualVel = tnt.getVelocity();
         // What WE set last tick â€” the clean baseline for air-physics calculations.
         Vector prev = prevVel.getOrDefault(uuid, new Vector(0, 0, 0));
 
         boolean inWater = isTNTInWater(tnt);
-
-        // ── Anchor-block water guard ──────────────────────────────────────────────
-        // If vanilla physics ran before our tick and noPhysics reflection failed
-        // (different field name, module access denied), the entity may drift slightly
-        // outside the water block its anchor lives in.  isTNTInWater() then returns
-        // false → the pin lapses → next tick it drifts further → runaway Y descent.
-        // Guard: also check the ANCHOR block directly.  If the anchor is still water
-        // we force inWater=true so the pin always snaps the entity back to the
-        // correct Y — completely immune to positional drift between ticks.
-        double[] existingPin = pinnedPos.get(uuid);
-        if (!inWater && existingPin != null && !launchedTNT.contains(uuid)) {
-            Block anchorBlock = tnt.getWorld().getBlockAt(
-                    (int) Math.floor(existingPin[0]),
-                    (int) Math.floor(existingPin[1]),
-                    (int) Math.floor(existingPin[2]));
-            if (isInWater(anchorBlock)) {
-                inWater = true;
-            }
-        }
-
-        // noPhysics=true while in water: vanilla Entity.move() is skipped entirely,
-        // so water buoyancy, flow, and gravity produce zero position change.
-        // noPhysics=false in air: vanilla handles gravity + block collision normally.
-        // setGravity mirrors this for defensive completeness.
-        setNoPhysics(tnt, inWater);
-        tnt.setGravity(!inWater);
 
         // ----------------------------------------------------------------
         // Explosion-launch detection
@@ -438,6 +443,14 @@ public class TNTPhysicsListener implements Listener {
         //   and XZ water-drift issues users reported.
         boolean launchedByExplosion = launchedTNT.contains(uuid)
                                    || prevHSq >= PARTIAL_SPEED_THRESHOLD_SQ;
+
+        // Only disable vanilla movement while we are explicitly owning the
+        // trajectory of explosion-launched TNT travelling through water.
+        // For all other states (including normal in-water TNT), keep gravity on
+        // so TNT can sink/fall naturally.
+        boolean manualWaterFlight = launchedByExplosion && inWater;
+        setNoPhysics(tnt, manualWaterFlight);
+        tnt.setGravity(!manualWaterFlight);
 
         double nx, ny, nz;
 
@@ -475,26 +488,49 @@ public class TNTPhysicsListener implements Listener {
                 double ay = (prev.getY() - 0.04) * 0.98;
                 double az = prev.getZ() * 0.98;
 
-                double destX = lp[0] + ax;
-                double destY = lp[1] + ay;
-                double destZ = lp[2] + az;
+                // Resolve collision per-axis (X -> Z -> Y) so a blocked axis can
+                // still slide on the others. This is critical for diagonal boosters:
+                // if a ladder blocks one axis, forward axis movement must still pass.
+                double nextX = lp[0];
+                double nextY = lp[1];
+                double nextZ = lp[2];
 
-                // Sweep the intended trajectory for block collisions.
-                // This prevents TNT from tunnelling through floors, walls, or any
-                // solid/partial block while we are overriding vanilla physics via
-                // teleportation.  sweepPath stops at the last safe position before
-                // the first blocking surface.
-                double[] swept = sweepPath(tnt.getWorld(),
-                        lp[0], lp[1], lp[2], destX, destY, destZ);
-                double nextX = swept[0];
-                double nextY = swept[1];
-                double nextZ = swept[2];
+                if (Math.abs(ax) > 1e-8) {
+                    double[] sx = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                            nextX + ax, nextY, nextZ);
+                    if (Math.abs(sx[0] - (nextX + ax)) > 1e-4) {
+                        ax = 0;
+                    }
+                    nextX = sx[0];
+                    nextY = sx[1];
+                    nextZ = sx[2];
+                }
 
-                // If any axis was stopped by a block, zero the corresponding
-                // velocity component so the TNT does not keep pushing into the block.
-                if (Math.abs(nextX - destX) > 1e-4) ax = 0;
-                if (Math.abs(nextY - destY) > 1e-4) ay = 0;
-                if (Math.abs(nextZ - destZ) > 1e-4) az = 0;
+                if (Math.abs(az) > 1e-8) {
+                    double[] sz = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                            nextX, nextY, nextZ + az);
+                    if (Math.abs(sz[2] - (nextZ + az)) > 1e-4) {
+                        az = 0;
+                    }
+                    nextX = sz[0];
+                    nextY = sz[1];
+                    nextZ = sz[2];
+                }
+
+                if (Math.abs(ay) > 1e-8) {
+                    double[] sy = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                            nextX, nextY + ay, nextZ);
+                    if (Math.abs(sy[1] - (nextY + ay)) > 1e-4) {
+                        ay = 0;
+                    }
+                    nextX = sy[0];
+                    nextY = sy[1];
+                    nextZ = sy[2];
+                }
+
+                ax = nextX - lp[0];
+                ay = nextY - lp[1];
+                az = nextZ - lp[2];
 
                 // Teleport entity forward to the swept (collision-safe) position.
                 Location curLoc = tnt.getLocation();
@@ -502,6 +538,7 @@ public class TNTPhysicsListener implements Listener {
                         curLoc.getYaw(), curLoc.getPitch()));
 
                 launchedPos.put(uuid, new double[]{nextX, nextY, nextZ});
+                safePos.put(uuid, new double[]{nextX, nextY, nextZ});
                 prevVel.put(uuid, new Vector(ax, ay, az));
 
                 if (ax * ax + az * az < LAUNCH_CLEAR_SPEED_SQ) {
@@ -527,45 +564,27 @@ public class TNTPhysicsListener implements Listener {
                     ny = resolved.getY();
                     nz = resolved.getZ();
                 }
+
+                Vector swept = resolveSweptCollision(tnt, new Vector(nx, ny, nz));
+                nx = swept.getX();
+                ny = swept.getY();
+                nz = swept.getZ();
             }
 
         } else {
             // Not explosion-launched: stationary or slow-moving TNT.
 
             if (inWater) {
-                // STATIC PIN in water.
-                //
-                // noPhysics=true (set above) is the PREFERRED mechanism: it makes
-                // vanilla Entity.move() a no-op so buoyancy, water-current, and gravity
-                // produce zero displacement.  However, if NMS reflection fails silently
-                // in this Paper build (different field name, module access denied, etc.),
-                // noPhysics would be a no-op and water current would push the TNT on
-                // every tick — causing the "drifting" and apparent "behind the dispenser"
-                // behaviour users see.
-                //
-                // The unconditional teleport below is the belt-and-suspenders backup:
-                // regardless of whether noPhysics worked, we forcibly return the entity
-                // to its anchor every tick.  The maximum visible drift is one vanilla tick
-                // of water-current motion (~0.01 block) — well below the 0.0625-block
-                // client-update threshold, so players see the TNT as perfectly stationary.
-
+                // Normal in-water TNT: cancel horizontal water flow drift while
+                // preserving vanilla vertical motion so TNT can sink/fall.
                 Location curLoc = tnt.getLocation();
-                double[] saved = pinnedPos.get(uuid);
-                if (saved == null) {
-                    // First tick seeing this TNT in water — record current position as anchor.
-                    saved = new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()};
-                    pinnedPos.put(uuid, saved);
-                } else {
-                    // Every subsequent tick: unconditionally snap back to the anchor.
-                    tnt.teleport(new Location(tnt.getWorld(),
-                            saved[0], saved[1], saved[2],
-                            curLoc.getYaw(), curLoc.getPitch()));
-                }
+                pinnedPos.put(uuid, new double[]{curLoc.getX(), curLoc.getY(), curLoc.getZ()});
 
                 nx = 0;
-                ny = 0;
+                ny = actualVel.getY();
                 nz = 0;
             } else {
+                pinnedPos.remove(uuid);
                 // In AIR, not explosion-launched: pass vanilla's computed velocity
                 // through (preserves prime momentum and gravity) then apply partial-
                 // block collision on top.  Do NOT zero X/Z — that would kill the
@@ -580,6 +599,11 @@ public class TNTPhysicsListener implements Listener {
                     ny = resolved.getY();
                     nz = resolved.getZ();
                 }
+
+                Vector swept = resolveSweptCollision(tnt, new Vector(nx, ny, nz));
+                nx = swept.getX();
+                ny = swept.getY();
+                nz = swept.getZ();
             }
         }
 
@@ -621,7 +645,7 @@ public class TNTPhysicsListener implements Listener {
         if (distSq < 1e-8) return new double[]{ex, ey, ez};
 
         double dist = Math.sqrt(distSq);
-        int steps = Math.max(4, (int) Math.ceil(dist * 8)); // â‰¥8 checks per block
+        int steps = Math.max(6, (int) Math.ceil(dist * SWEEP_STEPS_PER_BLOCK));
         double stepX = dx / steps;
         double stepY = dy / steps;
         double stepZ = dz / steps;
@@ -631,7 +655,7 @@ public class TNTPhysicsListener implements Listener {
             double cx = sx + stepX * i;
             double cy = sy + stepY * i;
             double cz = sz + stepZ * i;
-            if (isPositionBlocked(world, cx, cy, cz)) {
+            if (isPositionBlocked(world, cx, cy, cz, stepX, stepY, stepZ)) {
                 return new double[]{lastX, lastY, lastZ};
             }
             lastX = cx;
@@ -639,6 +663,55 @@ public class TNTPhysicsListener implements Listener {
             lastZ = cz;
         }
         return new double[]{ex, ey, ez};
+    }
+
+    /**
+     * Resolves collisions against full/partial blocks using fine-grained sweeping
+     * on each axis independently so TNT cannot tunnel through walls at high speed.
+     */
+    private Vector resolveSweptCollision(TNTPrimed tnt, Vector vel) {
+        if (vel.lengthSquared() < 1e-8) return vel;
+
+        Location loc = tnt.getLocation();
+        double nextX = loc.getX();
+        double nextY = loc.getY();
+        double nextZ = loc.getZ();
+
+        double vx = vel.getX();
+        double vy = vel.getY();
+        double vz = vel.getZ();
+
+        if (Math.abs(vx) > 1e-8) {
+            double[] sx = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                    nextX + vx, nextY, nextZ);
+            if (Math.abs(sx[0] - (nextX + vx)) > 1e-4) {
+                vx = 0;
+            }
+            nextX = sx[0];
+            nextY = sx[1];
+            nextZ = sx[2];
+        }
+
+        if (Math.abs(vz) > 1e-8) {
+            double[] sz = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                    nextX, nextY, nextZ + vz);
+            if (Math.abs(sz[2] - (nextZ + vz)) > 1e-4) {
+                vz = 0;
+            }
+            nextX = sz[0];
+            nextY = sz[1];
+            nextZ = sz[2];
+        }
+
+        if (Math.abs(vy) > 1e-8) {
+            double[] sy = sweepPath(tnt.getWorld(), nextX, nextY, nextZ,
+                    nextX, nextY + vy, nextZ);
+            if (Math.abs(sy[1] - (nextY + vy)) > 1e-4) {
+                vy = 0;
+            }
+        }
+
+        return new Vector(vx, vy, vz);
     }
 
     /**
@@ -667,7 +740,8 @@ public class TNTPhysicsListener implements Listener {
             || n.equals("GLASS_PANE");
     }
 
-    private boolean isPositionBlocked(World world, double cx, double cy, double cz) {
+    private boolean isPositionBlocked(World world, double cx, double cy, double cz,
+                                      double moveX, double moveY, double moveZ) {
         // TNT entity: X/Z are the horizontal centre of the 0.98-wide entity.
         //             Y is the FEET (bottom), height is 0.98.
         final double HALF_XZ = 0.49;
@@ -692,7 +766,18 @@ public class TNTPhysicsListener implements Listener {
                     if (isGlass(m)) continue;
                     if (PARTIAL_MATERIALS.contains(m)) {
                         BoundingBox blockBB = block.getBoundingBox();
-                        if (blockBB.getVolume() > 1e-6 && tntBB.overlaps(blockBB)) return true;
+                        if (blockBB.getVolume() <= 1e-6 || !tntBB.overlaps(blockBB)) continue;
+
+                        // Ladder hard-stop: if TNT overlaps a ladder, any horizontal
+                        // movement is blocked. Vertical-only movement is allowed.
+                        // This prevents high-speed or multi-booster shots slipping
+                        // through side-mounted ladder stoppers.
+                        if (m == Material.LADDER && block.getBlockData() instanceof Directional ladderDir) {
+                            if (Math.abs(moveX) > 1e-8 || Math.abs(moveZ) > 1e-8) return true;
+                            continue;
+                        }
+
+                        return true;
                     } else if (m.isSolid()) {
                         return true;
                     }
@@ -842,31 +927,10 @@ public class TNTPhysicsListener implements Listener {
                     double ocx = bb.getCenterX(), ocy = bb.getCenterY(), ocz = bb.getCenterZ();
 
                     if (block.getType() == Material.LADDER) {
-                        // Ladders are wall-mounted: only block the single axis perpendicular
-                        // to their attachment wall.  Y is never blocked â€” TNT falling down past
-                        // (or onto) a ladder must not be caught by it from above.
-                        // getFacing() returns the direction AWAY from the wall (into the room):
-                        //   EAST/WEST facing  â†’ attached to west/east  wall â†’ blocks X axis
-                        //   NORTH/SOUTH facing â†’ attached to south/north wall â†’ blocks Z axis
-                        BlockFace ladderFacing = ((Directional) block.getBlockData()).getFacing();
-                        boolean ladderBlocksX = ladderFacing == BlockFace.EAST
-                                || ladderFacing == BlockFace.WEST;
-                        if (ladderBlocksX) {
-                            if (out.getX() != 0) {
-                                BoundingBox testX = new BoundingBox(
-                                    ocx + out.getX() - halfX, ocy - halfY, ocz - halfZ,
-                                    ocx + out.getX() + halfX, ocy + halfY, ocz + halfZ);
-                                if (testX.overlaps(blockBB)) out.setX(0);
-                            }
-                        } else {
-                            if (out.getZ() != 0) {
-                                BoundingBox testZ = new BoundingBox(
-                                    ocx - halfX, ocy - halfY, ocz + out.getZ() - halfZ,
-                                    ocx + halfX, ocy + halfY, ocz + out.getZ() + halfZ);
-                                if (testZ.overlaps(blockBB)) out.setZ(0);
-                            }
-                        }
-                        continue; // never check Y â€” ladders cannot catch TNT from above
+                        // Ladder hard-stop for horizontal movement.
+                        if (out.getX() != 0) out.setX(0);
+                        if (out.getZ() != 0) out.setZ(0);
+                        continue; // keep Y untouched; TNT can still move vertically
                     }
 
                     // X axis
@@ -995,7 +1059,23 @@ public class TNTPhysicsListener implements Listener {
 
         if (wasInWater) {
             event.blockList().clear();
+            return;
         }
+
+        protectOverlappingLadders(event, tnt);
+    }
+
+    /**
+     * Prevents dry ladder stoppers from being broken when the detonating TNT
+     * is physically occupying the same ladder space.
+     */
+    private void protectOverlappingLadders(EntityExplodeEvent event, TNTPrimed tnt) {
+        BoundingBox bb = tnt.getBoundingBox();
+        event.blockList().removeIf(block -> {
+            if (block.getType() != Material.LADDER) return false;
+            BoundingBox blockBB = block.getBoundingBox();
+            return blockBB.getVolume() > 1e-6 && bb.overlaps(blockBB);
+        });
     }
 
     /**
@@ -1062,8 +1142,12 @@ public class TNTPhysicsListener implements Listener {
             double expY = 1.0 - axisCov.getY();
             double expZ = 1.0 - axisCov.getZ();
 
-            // Fully exposed on all axes -- leave vanilla blast result unchanged
-            if (expX >= 1.0 - 1e-3 && expY >= 1.0 - 1e-3 && expZ >= 1.0 - 1e-3) continue;
+            // Fully exposed on all axes -- keep vanilla velocity but still mark
+            // as explosion-launched so water-flight logic can preserve the slide.
+            if (expX >= 1.0 - 1e-3 && expY >= 1.0 - 1e-3 && expZ >= 1.0 - 1e-3) {
+                syncVelocityFromExternal(tid, postVel);
+                continue;
+            }
 
             Vector newVel = preVel.clone().add(new Vector(
                     delta.getX() * expX,

@@ -16,7 +16,7 @@ public class RestartAdminCommand implements CommandExecutor {
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         String cmd = command.getName().toLowerCase();
 
-        if (cmd.equals("restartnow") || cmd.equals("forcereboot")) {
+        if (cmd.equals("restartnow") || cmd.equals("rebootforce") || cmd.equals("forcereboot")) {
             if (!sender.hasPermission("simplefactionsraiding.admin.restart")) {
                 sender.sendMessage("§cYou don't have permission.");
                 return true;

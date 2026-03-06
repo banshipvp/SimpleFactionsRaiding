@@ -1,5 +1,7 @@
 package local.simplefactionsraiding;
 
+import local.simplefactions.HubQueueManager;
+import local.simplefactions.SimpleFactionsPlugin;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -20,10 +22,13 @@ public class HubSelectorListener implements Listener {
 
     private final MultiWorldManager multiWorldManager;
     private final HubCommand hubCommand;
+    private final SimpleFactionsPlugin simpleFactionsPlugin;
 
-    public HubSelectorListener(MultiWorldManager multiWorldManager, HubCommand hubCommand) {
+    public HubSelectorListener(MultiWorldManager multiWorldManager, HubCommand hubCommand,
+                               SimpleFactionsPlugin simpleFactionsPlugin) {
         this.multiWorldManager = multiWorldManager;
         this.hubCommand = hubCommand;
+        this.simpleFactionsPlugin = simpleFactionsPlugin;
     }
 
     @EventHandler
@@ -59,6 +64,9 @@ public class HubSelectorListener implements Listener {
 
         if (clicked.getType() == Material.GRASS_BLOCK) {
             player.closeInventory();
+            if (tryQueue(player)) {
+                return;
+            }
             boolean ok = multiWorldManager.teleportToFactionServer(player);
             if (ok) {
                 player.sendMessage("§aConnected to §eFaction Server§a.");
@@ -81,5 +89,24 @@ public class HubSelectorListener implements Listener {
 
         inv.setItem(4, factionServer);
         player.openInventory(inv);
+    }
+
+    private boolean tryQueue(Player player) {
+        if (simpleFactionsPlugin == null) return false;
+        HubQueueManager queue = simpleFactionsPlugin.getHubQueueManager();
+        if (queue == null) return false;
+
+        boolean added = queue.enqueue(player);
+        if (added) {
+            int pos = queue.getPosition(player.getUniqueId());
+            int size = queue.size();
+            player.sendMessage("§a✔ You joined the §6Factions §aqueue!");
+            player.sendMessage("§e  Position: §f" + pos + "§e/§f" + size);
+        } else {
+            int pos = queue.getPosition(player.getUniqueId());
+            int size = queue.size();
+            player.sendMessage("§eYou are already in the queue at position §f" + pos + "§e/§f" + size + "§e.");
+        }
+        return true;
     }
 }

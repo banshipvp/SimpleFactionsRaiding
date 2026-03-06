@@ -4,6 +4,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.Bukkit;
 import local.simplefactions.SimpleFactionsPlugin;
 import local.simplefactions.FactionManager;
+import local.simplefactions.HubQueueManager;
 
 public class SimpleFactionsRaidingPlugin extends JavaPlugin {
 
@@ -18,6 +19,7 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
     private HubCommand hubCommand;
     private PlayerProfileListener playerProfileListener;
     private AutoRestartManager autoRestartManager;
+    private SimpleFactionsPlugin simpleFactionsPlugin;
 
     @Override
     public void onEnable() {
@@ -34,8 +36,14 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
             return;
         }
 
-        SimpleFactionsPlugin simpleFactionsPlugin = (SimpleFactionsPlugin) Bukkit.getPluginManager().getPlugin("SimpleFactions");
+        this.simpleFactionsPlugin = (SimpleFactionsPlugin) Bukkit.getPluginManager().getPlugin("SimpleFactions");
         FactionManager factionManager = simpleFactionsPlugin.getFactionManager();
+
+        HubQueueManager queueManager = simpleFactionsPlugin.getHubQueueManager();
+        if (queueManager != null) {
+            queueManager.setTransferHandler(player -> multiWorldManager.teleportToFactionServer(player));
+            getLogger().info("Configured SimpleFactions queue to local faction-world teleport mode.");
+        }
 
         // Initialize managers
         this.raidingManager = new RaidingManager(this);
@@ -59,30 +67,38 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new CannonConsistencyListener(this), this);
         getServer().getPluginManager().registerEvents(collectionChestListener, this);
         getServer().getPluginManager().registerEvents(worldRulesListener, this);
-        getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand), this);
+        getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand, simpleFactionsPlugin), this);
         getServer().getPluginManager().registerEvents(playerProfileListener, this);
 
         getLogger().info("/f tnt commands handled by FactionTntCommandListener.");
 
         // Register commands
         getCommand("raid").setExecutor(new RaidCommand(this, raidingManager, coreChunkManager));
+        SimpleFactionsRaidingTabCompleter tabCompleter = new SimpleFactionsRaidingTabCompleter(coreChunkManager);
+        getCommand("raid").setTabCompleter(tabCompleter);
         getCommand("collectionfilter").setExecutor(new CollectionChestCommand(collectionChestManager, collectionFilterGUI));
         getCommand("createcollectionchest").setExecutor(new CollectionChestCommand(collectionChestManager, collectionFilterGUI));
+        getCommand("createcollectionchest").setTabCompleter(tabCompleter);
         getCommand("customtnt").setExecutor(new CustomExplosiveCommand(customTNTManager, CustomExplosiveCommand.CommandKind.TNT));
+        getCommand("customtnt").setTabCompleter(tabCompleter);
         getCommand("customcreeper").setExecutor(new CustomExplosiveCommand(customTNTManager, CustomExplosiveCommand.CommandKind.CREEPER));
+        getCommand("customcreeper").setTabCompleter(tabCompleter);
         WildernessCommand wildernessCommand = new WildernessCommand(this);
         getCommand("wild").setExecutor(wildernessCommand);
         getCommand("widlerness").setExecutor(wildernessCommand);
         getCommand("hub").setExecutor(hubCommand);
-        getCommand("server").setExecutor(new ServerCommand(multiWorldManager));
+        getCommand("server").setExecutor(new ServerCommand(multiWorldManager, simpleFactionsPlugin));
+        getCommand("server").setTabCompleter(tabCompleter);
         getCommand("spawn").setExecutor(new SpawnCommand(this, multiWorldManager));
         getCommand("setspawn").setExecutor(new SetSpawnCommand(this));
         getCommand("worldreset").setExecutor(new WorldResetCommand(this, multiWorldManager));
+        getCommand("worldreset").setTabCompleter(tabCompleter);
         RestartAdminCommand restartAdminCommand = new RestartAdminCommand(autoRestartManager);
         getCommand("restartnow").setExecutor(restartAdminCommand);
         getCommand("forcerestart").setExecutor(restartAdminCommand);
-        getCommand("forcereboot").setExecutor(restartAdminCommand);
+        getCommand("rebootforce").setExecutor(restartAdminCommand);
         getCommand("reboot").setExecutor(new RebootCommand(autoRestartManager));
+        getCommand("staff").setExecutor(new StaffOnlineCommand());
 
         // /pastecannon — WorldEdit schematic paste for cannon testing
         if (getServer().getPluginManager().getPlugin("WorldEdit") != null) {
@@ -102,6 +118,9 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (simpleFactionsPlugin != null && simpleFactionsPlugin.getHubQueueManager() != null) {
+            simpleFactionsPlugin.getHubQueueManager().setTransferHandler(null);
+        }
         if (autoRestartManager != null) {
             autoRestartManager.stop();
         }
