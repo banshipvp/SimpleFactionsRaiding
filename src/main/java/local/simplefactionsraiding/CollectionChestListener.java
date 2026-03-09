@@ -50,19 +50,22 @@ public class CollectionChestListener implements Listener {
     public void onInventoryClick(InventoryClickEvent event) {
         if (!(event.getWhoClicked() instanceof Player player)) return;
 
-        // Check if this is a filter menu by examining the title
-        String title = event.getView().getTitle();
-        if (!title.contains("§b§lCollection Chest")) return;
+        // Identify filter menus by their InventoryHolder (not by title – titles are fragile in Paper 1.21)
+        if (!(event.getInventory().getHolder() instanceof CollectionFilterGUI.FilterMenuHolder holder)) return;
 
         event.setCancelled(true);
 
         ItemStack clicked = event.getCurrentItem();
         if (clicked == null || clicked.getType().isAir()) return;
 
-        // Get block location from clicked item
-        String blockLocation = filterGUI.getBlockLocationFromItem(clicked);
-        Block block = filterGUI.deserializeLocation(blockLocation);
-        if (block == null) return;
+        // Get block location from the holder
+        Block block = filterGUI.deserializeLocation(holder.getBlockLocation());
+        if (block == null) {
+            // Fall back to PDC on item meta if holder location fails
+            String itemLoc = filterGUI.getBlockLocationFromItem(clicked);
+            block = filterGUI.deserializeLocation(itemLoc);
+            if (block == null) return;
+        }
 
         // Close button
         if (clicked.getType().name().equals("BARRIER")) {

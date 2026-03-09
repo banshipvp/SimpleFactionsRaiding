@@ -6,6 +6,7 @@ import org.bukkit.NamespacedKey;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -21,6 +22,27 @@ import java.util.Set;
  * Provides inventory-based menus for selecting which item categories to collect.
  */
 public class CollectionFilterGUI {
+
+    /**
+     * InventoryHolder used for all collection-filter menus.
+     * Storing the serialized block location lets the click listener
+     * identify the menu reliably without depending on title strings.
+     */
+    public static class FilterMenuHolder implements InventoryHolder {
+        private final String blockLocation;
+        private Inventory inventory;
+
+        public FilterMenuHolder(String blockLocation) {
+            this.blockLocation = blockLocation;
+        }
+
+        public String getBlockLocation() { return blockLocation; }
+
+        @Override
+        public Inventory getInventory() { return inventory; }
+
+        public void setInventory(Inventory inv) { this.inventory = inv; }
+    }
 
     private final CollectionChestManager chestManager;
     private final JavaPlugin plugin;
@@ -39,7 +61,9 @@ public class CollectionFilterGUI {
     }
 
     public void openMainFilterMenu(Player player, Block block) {
-        Inventory inv = Bukkit.createInventory(null, 27, "§b§lCollection Chest Filters");
+        FilterMenuHolder holder = new FilterMenuHolder(serializeLocation(block));
+        Inventory inv = Bukkit.createInventory(holder, 27, "§b§lCollection Chest Filters");
+        holder.setInventory(inv);
         
         CollectionChestManager.MobDropCategory[] categories = chestManager.getAllCategories();
         Set<String> enabledFilters = chestManager.getEnabledFilters(block);
@@ -72,7 +96,9 @@ public class CollectionFilterGUI {
 
     public void openSubcategoryMenu(Player player, CollectionChestManager.MobDropCategory category, Block block) {
         CollectionChestManager.ItemSubcategory[] subcategories = chestManager.getSubcategoriesForCategory(category);
-        Inventory inv = Bukkit.createInventory(null, 9, "§b§l" + category.getDisplayName() + " Filters");
+        FilterMenuHolder holder = new FilterMenuHolder(serializeLocation(block));
+        Inventory inv = Bukkit.createInventory(holder, 9, "§b§l" + category.getDisplayName() + " Filters");
+        holder.setInventory(inv);
 
         Set<String> enabledFilters = chestManager.getEnabledFilters(block);
 
@@ -171,7 +197,7 @@ public class CollectionFilterGUI {
     }
 
     public boolean isFilterMenu(org.bukkit.inventory.InventoryView view) {
-        return view.getTitle().contains("§b§lCollection Chest");
+        return view.getTopInventory().getHolder() instanceof FilterMenuHolder;
     }
 
     public String getBlockLocationFromItem(ItemStack item) {

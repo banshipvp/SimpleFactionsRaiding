@@ -19,6 +19,7 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
     private HubCommand hubCommand;
     private PlayerProfileListener playerProfileListener;
     private AutoRestartManager autoRestartManager;
+    private ServerStatusManager serverStatusManager;
     private SimpleFactionsPlugin simpleFactionsPlugin;
 
     @Override
@@ -50,12 +51,15 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         this.customTNTManager = new CustomTNTManager(this);
         this.coreChunkManager = new CoreChunkManager(this, factionManager);
         this.collectionChestManager = new CollectionChestManager(this);
+        this.collectionChestManager.loadData(getDataFolder());
         this.collectionFilterGUI = new CollectionFilterGUI(collectionChestManager, this);
         this.collectionChestListener = new CollectionChestListener(collectionChestManager, collectionFilterGUI);
         this.worldRulesListener = new WorldRulesListener(this, multiWorldManager);
         this.hubCommand = new HubCommand(this, multiWorldManager);
         this.playerProfileListener = new PlayerProfileListener(this, multiWorldManager, hubCommand);
         this.autoRestartManager = new AutoRestartManager(this, multiWorldManager);
+        this.serverStatusManager = new ServerStatusManager(this);
+        this.autoRestartManager.setServerStatusManager(serverStatusManager);
 
         // Register listeners
         getServer().getPluginManager().registerEvents(new RaidListener(this, raidingManager, customTNTManager, coreChunkManager), this);
@@ -69,6 +73,7 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(worldRulesListener, this);
         getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand, simpleFactionsPlugin), this);
         getServer().getPluginManager().registerEvents(playerProfileListener, this);
+        getServer().getPluginManager().registerEvents(serverStatusManager, this);
 
         getLogger().info("/f tnt commands handled by FactionTntCommandListener.");
 
@@ -99,6 +104,9 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getCommand("rebootforce").setExecutor(restartAdminCommand);
         getCommand("reboot").setExecutor(new RebootCommand(autoRestartManager));
         getCommand("staff").setExecutor(new StaffOnlineCommand());
+        ServerOpenCloseCommand serverOpenCloseCommand = new ServerOpenCloseCommand(serverStatusManager);
+        getCommand("serveropen").setExecutor(serverOpenCloseCommand);
+        getCommand("serverclose").setExecutor(serverOpenCloseCommand);
 
         // /pastecannon — WorldEdit schematic paste for cannon testing
         if (getServer().getPluginManager().getPlugin("WorldEdit") != null) {
@@ -114,10 +122,17 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         worldRulesListener.applyWorldRulesNow();
         getLogger().info("Applied wilderness world rules (border + bedrock layer).");
         autoRestartManager.start();
+
+        // Schedule auto-converter task (TNT→Gunpowder, Ingot→Block) every 5 seconds
+        final FactionManager fmRef = factionManager;
+        Bukkit.getScheduler().runTaskTimer(this, new ChestAutoConverterTask(collectionChestManager, fmRef), 100L, 100L);
     }
 
     @Override
     public void onDisable() {
+        if (collectionChestManager != null) {
+            collectionChestManager.saveData(getDataFolder());
+        }
         if (simpleFactionsPlugin != null && simpleFactionsPlugin.getHubQueueManager() != null) {
             simpleFactionsPlugin.getHubQueueManager().setTransferHandler(null);
         }

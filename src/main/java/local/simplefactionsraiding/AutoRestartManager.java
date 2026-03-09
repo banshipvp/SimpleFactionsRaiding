@@ -21,6 +21,10 @@ public class AutoRestartManager {
     private boolean manualRestartActive;
     private String initiatedBy = "System";
     private boolean shutdownOnExecute = true;
+    private ServerStatusManager serverStatusManager = null;
+
+    /** How long to hold the server closed before issuing the Bukkit restart command. */
+    private static final int PRE_RESTART_SECONDS = 60;
 
     public AutoRestartManager(SimpleFactionsRaidingPlugin plugin, MultiWorldManager multiWorldManager) {
         this.plugin = plugin;
@@ -62,6 +66,7 @@ public class AutoRestartManager {
         }
 
         if (secondsLeft <= 0) {
+            secondsLeft = -1; // prevent repeated triggering
             executeRestart();
             return;
         }
@@ -70,50 +75,26 @@ public class AutoRestartManager {
             broadcastRebootMessage((int) secondsLeft);
         }
 
-        if (secondsLeft == 10) {
-            for (Player player : Bukkit.getOnlinePlayers()) {
-                multiWorldManager.teleportToHub(player);
-                player.sendMessage("§eYou were sent to hub before restart.");
-            }
-        }
-
         secondsLeft--;
     }
 
     private void executeRestart() {
-        Bukkit.broadcastMessage("§4§lSERVER REBOOT");
-        Bukkit.broadcastMessage("§cServer is rebooting now...");
+        // Teleport all players to hub immediately when restart fires
+        Bukkit.broadcastMessage("§e§lSERVER REBOOT §7— Sending all players to Hub now!");
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            multiWorldManager.teleportToHub(player);
+            player.sendMessage("§eYou have been moved to Hub. The Factions server is restarting.");
+        }
 
         if (shutdownOnExecute) {
-            Bukkit.getScheduler().runTask(plugin, () -> {
-                try {
-                    Bukkit.getServer().savePlayers();
-                    Bukkit.getWorlds().forEach(world -> {
-                        try {
-                            world.save();
-                        } catch (Throwable ignored) {}
-                    });
-                } catch (Throwable ignored) {}
-
-                ConsoleCommandSender console = Bukkit.getConsoleSender();
-                boolean restartIssued = false;
-                try {
-                    restartIssued = Bukkit.dispatchCommand(console, "restart");
-                } catch (Throwable ignored) {}
-
-                if (!restartIssued) {
-                    plugin.getLogger().warning("Restart command was unavailable; falling back to shutdown.");
-                    Bukkit.shutdown();
-                    return;
-                }
-
-                Bukkit.getScheduler().runTaskLater(plugin, () -> {
-                    if (Bukkit.getOnlinePlayers().isEmpty()) {
-                        Bukkit.shutdown();
-                    }
-                }, 100L);
-            });
+            // Enter pre-restart phase: close server to public, show 60-second countdown, THEN restart.
+            if (serverStatusManager != null) {
+                serverStatusManager.startPreRestartPhase(PRE_RESTART_SECONDS, this::doActualRestart);
+            } else {
+                doActualRestart();
+            }
         } else {
+            // Live reboot — players stay connected
             for (Player player : Bukkit.getOnlinePlayers()) {
                 multiWorldManager.teleportToHub(player);
                 player.sendMessage("§aLive reboot complete. You remain connected in hub.");
@@ -126,6 +107,37 @@ public class AutoRestartManager {
         }
     }
 
+    /** Issues the actual Bukkit restart/shutdown command. Called after the pre-restart phase. */
+    private void doActualRestart() {
+        Bukkit.broadcastMessage("§4§lSERVER REBOOT §7— Restarting now!");
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            try {
+                Bukkit.getServer().savePlayers();
+                Bukkit.getWorlds().forEach(world -> {
+                    try { world.save(); } catch (Throwable ignored) {}
+                });
+            } catch (Throwable ignored) {}
+
+            ConsoleCommandSender console = Bukkit.getConsoleSender();
+            boolean restartIssued = false;
+            try {
+                restartIssued = Bukkit.dispatchCommand(console, "restart");
+            } catch (Throwable ignored) {}
+
+            if (!restartIssued) {
+                plugin.getLogger().warning("Restart command was unavailable; falling back to shutdown.");
+                Bukkit.shutdown();
+                return;
+            }
+
+            Bukkit.getScheduler().runTaskLater(plugin, () -> {
+                if (Bukkit.getOnlinePlayers().isEmpty()) {
+                    Bukkit.shutdown();
+                }
+            }, 100L);
+        });
+    }
+
     public long getSecondsLeft() {
         return secondsLeft;
     }
@@ -136,6 +148,36 @@ public class AutoRestartManager {
 
     public boolean isAutoEnabled() {
         return autoEnabled;
+    }
+
+    public void setServerStatusManager(ServerStatusManager manager) {
+        this.serverStatusManager = manager;
+    }
+
+    /**
+     * Immediately closes the server to public players, moves all online players
+     * to Hub, then begins a single 60-second countdown before restarting.
+     * Used by /rebootforce.
+     */
+    public void closeServerForReboot(String initiator) {
+        this.manualRestartActive = true;
+        this.initiatedBy = initiator == null || initiator.isBlank() ? "Admin" : initiator;
+
+        // Broadcast and send everyone to hub immediately
+        Bukkit.broadcastMessage("§4§lSERVER REBOOT §7— Initiated by §e" + this.initiatedBy);
+        Bukkit.broadcastMessage("§cFactions server restarting. All players moved to Hub — back online in ~60 seconds.");
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            multiWorldManager.teleportToHub(player);
+            player.sendMessage("§eThe Factions server is rebooting. You have been moved to Hub.");
+        }
+
+        // One single countdown — after 60s do the actual restart.
+        // startPreRestartPhase closes logins, kicks non-staff, then calls doActualRestart.
+        if (serverStatusManager != null) {
+            serverStatusManager.startPreRestartPhase(60, this::doActualRestart);
+        } else {
+            startManualRestart(60, initiator);
+        }
     }
 
     public void startManualRestart(int seconds, String initiator) {

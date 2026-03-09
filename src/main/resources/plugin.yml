@@ -90,6 +90,14 @@ commands:
     description: Set spawn location for current world
     usage: /setspawn
     permission: simplefactionsraiding.setspawn
+  serveropen:
+    description: Open the server to all players
+    usage: /serveropen
+    permission: simplefactionsraiding.admin.restart
+  serverclose:
+    description: Close the server to public (non-staff) players
+    usage: /serverclose
+    permission: simplefactionsraiding.admin.restart
 
 permissions:
   simplefactionsraiding.admin:
@@ -127,6 +135,9 @@ permissions:
     default: op
   simplefactionsraiding.admin.forcerestart:
     description: Allows immediate restart via /forcerestart
+    default: op
+  simplefactionsraiding.admin.bypass:
+    description: Bypass server-closed status (dev/admin/owner ranks)
     default: op
   simplefactionsraiding.spawn:
     description: Allows use of /spawn command

@@ -77,8 +77,18 @@ public class HubSelectorListener implements Listener {
     }
 
     private void openSelector(Player player) {
-        Inventory inv = Bukkit.createInventory(null, 9, MENU_TITLE);
+        Inventory inv = Bukkit.createInventory(null, 27, MENU_TITLE);
 
+        // Fill entire GUI with aqua border panes
+        ItemStack border = new ItemStack(Material.CYAN_STAINED_GLASS_PANE);
+        ItemMeta borderMeta = border.getItemMeta();
+        if (borderMeta != null) {
+            borderMeta.setDisplayName("§r");
+            border.setItemMeta(borderMeta);
+        }
+        for (int i = 0; i < 27; i++) inv.setItem(i, border);
+
+        // Faction Server button centred in the middle row (slot 13)
         ItemStack factionServer = new ItemStack(Material.GRASS_BLOCK, 1);
         ItemMeta meta = factionServer.getItemMeta();
         if (meta != null) {
@@ -86,8 +96,8 @@ public class HubSelectorListener implements Listener {
             meta.setLore(List.of("§7Click to join the faction spawn world"));
             factionServer.setItemMeta(meta);
         }
+        inv.setItem(13, factionServer);
 
-        inv.setItem(4, factionServer);
         player.openInventory(inv);
     }
 

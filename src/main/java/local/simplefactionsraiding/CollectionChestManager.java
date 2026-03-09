@@ -13,6 +13,7 @@ import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
 import java.util.*;
 
 /**
@@ -27,6 +28,8 @@ public class CollectionChestManager {
     private final NamespacedKey trappedChestKey;
     private final NamespacedKey chestFilterKey;
     private final Map<String, Set<String>> chunkFilters = new HashMap<>(); // chunk_key -> enabled filters
+    /** Serialized locations (world,x,y,z) of all registered collection chests. */
+    private final Set<String> registeredChests = new HashSet<>();
 
     public enum MobDropCategory {
         TNT("TNT", new Material[]{Material.TNT}),
@@ -125,6 +128,7 @@ public class CollectionChestManager {
         
         container.update();
         initializeChunkFilters(block.getChunk().getChunkKey());
+        registeredChests.add(serializeBlock(block));
     }
 
     public boolean isTrappedChest(Block block) {
@@ -192,6 +196,78 @@ public class CollectionChestManager {
         HashMap<Integer, ItemStack> leftover = inv.addItem(toAdd);
 
         return leftover.isEmpty();
+    }
+
+    // -------------------------------------------------------------------------
+    // Chest location tracking
+    // -------------------------------------------------------------------------
+
+    /** Returns a snapshot of all registered chest location strings (world,x,y,z). */
+    public Set<String> getRegisteredChests() {
+        return Collections.unmodifiableSet(registeredChests);
+    }
+
+    /** Serializes a block position to a string key. */
+    public String serializeBlock(Block block) {
+        return block.getWorld().getName() + "," + block.getX() + "," + block.getY() + "," + block.getZ();
+    }
+
+    /** Deserializes a key from {@link #serializeBlock} back to a live Block. Returns null if invalid. */
+    public Block deserializeBlock(String key) {
+        String[] p = key.split(",");
+        if (p.length != 4) return null;
+        try {
+            org.bukkit.World world = Bukkit.getWorld(p[0]);
+            if (world == null) return null;
+            return world.getBlockAt(Integer.parseInt(p[1]), Integer.parseInt(p[2]), Integer.parseInt(p[3]));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Persistence
+    // -------------------------------------------------------------------------
+
+    /** Saves chunkFilters and registeredChests to data folder. */
+    public void saveData(File dataFolder) {
+        dataFolder.mkdirs();
+        File file = new File(dataFolder, "collection_chests.yml");
+        org.bukkit.configuration.file.YamlConfiguration yaml = new org.bukkit.configuration.file.YamlConfiguration();
+
+        // Save filters
+        for (Map.Entry<String, Set<String>> entry : chunkFilters.entrySet()) {
+            yaml.set("filters." + entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        // Save chest locations
+        yaml.set("chests", new ArrayList<>(registeredChests));
+
+        try {
+            yaml.save(file);
+        } catch (Exception ex) {
+            plugin.getLogger().severe("Failed to save collection chest data: " + ex.getMessage());
+        }
+    }
+
+    /** Loads chunkFilters and registeredChests from data folder. */
+    public void loadData(File dataFolder) {
+        File file = new File(dataFolder, "collection_chests.yml");
+        if (!file.exists()) return;
+
+        org.bukkit.configuration.file.YamlConfiguration yaml =
+            org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(file);
+
+        // Load filters
+        org.bukkit.configuration.ConfigurationSection sec = yaml.getConfigurationSection("filters");
+        if (sec != null) {
+            for (String key : sec.getKeys(false)) {
+                List<String> list = sec.getStringList(key);
+                chunkFilters.put(key, new HashSet<>(list));
+            }
+        }
+        // Load chest locations
+        List<String> chests = yaml.getStringList("chests");
+        registeredChests.addAll(chests);
     }
 
     public Material[] getFilteredMaterials(MobDropCategory category, ItemSubcategory subcategory) {

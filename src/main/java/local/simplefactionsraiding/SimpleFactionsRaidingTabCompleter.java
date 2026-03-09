@@ -29,7 +29,7 @@ public class SimpleFactionsRaidingTabCompleter implements TabCompleter {
             case "createcollectionchest" -> completeCreateCollectionChest(sender, args);
             case "server" -> completeServer(args);
             case "worldreset" -> completeWorldReset(sender, args);
-            case "restartnow", "rebootforce", "forcereboot", "forcerestart", "reboot", "collectionfilter", "wild", "widlerness", "hub", "spawn", "setspawn" -> List.of();
+            case "restartnow", "rebootforce", "forcereboot", "forcerestart", "reboot", "collectionfilter", "wild", "widlerness", "hub", "spawn", "setspawn", "serveropen", "serverclose" -> List.of();
             default -> List.of();
         };
     }
