@@ -18,6 +18,9 @@ public class ServerStatusManager implements Listener {
 
     private boolean serverClosed = false;
 
+    /** True while the server is in dev-maintenance/reboot mode (post-countdown, waiting for /serveropen). */
+    private boolean rebooting = false;
+
     /** True while counting down the 60-second pre-restart window. */
     private boolean inPreRestart = false;
     private int preRestartSecondsLeft = 0;
@@ -38,6 +41,8 @@ public class ServerStatusManager implements Listener {
         if (inPreRestart && preRestartSecondsLeft > 0) {
             msg = "§4Server Reboot\n§cServer is restarting. Try again in §e"
                     + preRestartSecondsLeft + " §cseconds.";
+        } else if (rebooting) {
+            msg = "§4Server Rebooting\n§cThe Factions server is currently rebooting.\n§7Please check back soon — the server will reopen shortly.";
         } else {
             msg = "§4Server Closed\n§cThe server is temporarily closed to the public.";
         }
@@ -94,6 +99,7 @@ public class ServerStatusManager implements Listener {
 
     public void openServer() {
         serverClosed = false;
+        rebooting = false;
         inPreRestart = false;
         preRestartSecondsLeft = 0;
         if (preRestartTask != null) {
@@ -110,6 +116,14 @@ public class ServerStatusManager implements Listener {
 
     public boolean isServerClosed() {
         return serverClosed;
+    }
+
+    public boolean isRebooting() {
+        return rebooting;
+    }
+
+    public void setRebooting(boolean rebooting) {
+        this.rebooting = rebooting;
     }
 
     public int getPreRestartSecondsLeft() {

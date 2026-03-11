@@ -22,10 +22,12 @@ public class RestartAdminCommand implements CommandExecutor {
                 return true;
             }
 
-            // closeServerForReboot immediately sends all players to hub, closes public logins,
-            // then starts a single 60-second countdown before issuing the restart command.
-            autoRestartManager.closeServerForReboot(sender.getName());
-            sender.sendMessage("§aReboot initiated — all players moved to Hub. Server restarting in §e60 seconds§a.");
+            // Start a 60-second visible countdown. At 0, all players are moved to Hub
+            // and the server is closed to public access. No world reset or server restart.
+            // Re-open with /serveropen when maintenance is done.
+            autoRestartManager.startRebootCountdown(sender.getName());
+            sender.sendMessage("§aReboot countdown started — server will close to public in §e60 seconds§a.");
+            sender.sendMessage("§7Players will be moved to Hub at 0. Use §e/serveropen §7when ready to reopen.");
             return true;
         }
 

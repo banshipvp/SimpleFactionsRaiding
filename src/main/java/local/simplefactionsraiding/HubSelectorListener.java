@@ -23,12 +23,15 @@ public class HubSelectorListener implements Listener {
     private final MultiWorldManager multiWorldManager;
     private final HubCommand hubCommand;
     private final SimpleFactionsPlugin simpleFactionsPlugin;
+    private final ServerStatusManager serverStatusManager;
 
     public HubSelectorListener(MultiWorldManager multiWorldManager, HubCommand hubCommand,
-                               SimpleFactionsPlugin simpleFactionsPlugin) {
+                               SimpleFactionsPlugin simpleFactionsPlugin,
+                               ServerStatusManager serverStatusManager) {
         this.multiWorldManager = multiWorldManager;
         this.hubCommand = hubCommand;
         this.simpleFactionsPlugin = simpleFactionsPlugin;
+        this.serverStatusManager = serverStatusManager;
     }
 
     @EventHandler
@@ -64,6 +67,19 @@ public class HubSelectorListener implements Listener {
 
         if (clicked.getType() == Material.GRASS_BLOCK) {
             player.closeInventory();
+
+            // Block entry when server is closed/rebooting
+            if (serverStatusManager != null && serverStatusManager.isServerClosed()) {
+                if (serverStatusManager.isRebooting()) {
+                    player.sendMessage("§cThe Factions server is currently rebooting and is not accepting players.");
+                    player.sendMessage("§7Please wait — the server will reopen once the reboot is complete.");
+                } else {
+                    player.sendMessage("§cThe Factions server is currently closed.");
+                    player.sendMessage("§7Please check back later.");
+                }
+                return;
+            }
+
             if (tryQueue(player)) {
                 return;
             }
@@ -89,11 +105,31 @@ public class HubSelectorListener implements Listener {
         for (int i = 0; i < 27; i++) inv.setItem(i, border);
 
         // Faction Server button centred in the middle row (slot 13)
+        // Display changes based on server status
         ItemStack factionServer = new ItemStack(Material.GRASS_BLOCK, 1);
         ItemMeta meta = factionServer.getItemMeta();
         if (meta != null) {
-            meta.setDisplayName("§a§lFaction Server");
-            meta.setLore(List.of("§7Click to join the faction spawn world"));
+            boolean closed = serverStatusManager != null && serverStatusManager.isServerClosed();
+            boolean rebooting = serverStatusManager != null && serverStatusManager.isRebooting();
+            if (rebooting) {
+                meta.setDisplayName("§c§lFaction Server §7[§cREBOOTING§7]");
+                meta.setLore(List.of(
+                    "§cServer is currently rebooting.",
+                    "§7Please check back soon — it will reopen shortly."
+                ));
+            } else if (closed) {
+                meta.setDisplayName("§c§lFaction Server §7[§cCLOSED§7]");
+                meta.setLore(List.of(
+                    "§cServer is currently closed.",
+                    "§7Please check back later."
+                ));
+            } else {
+                meta.setDisplayName("§a§lFaction Server");
+                meta.setLore(List.of(
+                    "§7Click to join the faction spawn world",
+                    "§a● §aServer is §l§aOPEN"
+                ));
+            }
             factionServer.setItemMeta(meta);
         }
         inv.setItem(13, factionServer);

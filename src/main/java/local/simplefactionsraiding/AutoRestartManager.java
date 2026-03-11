@@ -14,6 +14,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 public class AutoRestartManager {
 
@@ -28,6 +29,7 @@ public class AutoRestartManager {
     private String initiatedBy = "System";
     private boolean shutdownOnExecute = true;
     private ServerStatusManager serverStatusManager = null;
+    private BukkitTask rebootCountdownTask = null;
 
     /** How long to hold the server closed before issuing the Bukkit restart command. */
     private static final int PRE_RESTART_SECONDS = 60;
@@ -161,9 +163,58 @@ public class AutoRestartManager {
     }
 
     /**
+     * Starts a 60-second public countdown, then teleports all players to Hub and
+     * closes the server to public access (rebooting mode). No world reset or
+     * server restart — staff use /serveropen when maintenance is done.
+     * Used by /rebootforce.
+     */
+    public void startRebootCountdown(String initiator) {
+        if (rebootCountdownTask != null) {
+            rebootCountdownTask.cancel();
+            rebootCountdownTask = null;
+        }
+
+        String who = (initiator == null || initiator.isBlank()) ? "Admin" : initiator;
+        Bukkit.broadcastMessage("§4§lSERVER REBOOT §7— Initiated by §e" + who);
+        Bukkit.broadcastMessage("§cThe Factions server will close in §e60 seconds§c. Finish what you're doing!");
+
+        final int[] remaining = {60};
+        final Set<Integer> announceAt = Set.of(60, 30, 10, 5, 4, 3, 2, 1);
+
+        rebootCountdownTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                remaining[0]--;
+                if (remaining[0] > 0) {
+                    if (announceAt.contains(remaining[0])) {
+                        Bukkit.broadcastMessage("§c§lREBOOT §7— Server closing in §e" + remaining[0] + " §7seconds...");
+                        for (Player p : Bukkit.getOnlinePlayers()) {
+                            p.sendTitle("§c§lSERVER REBOOT", "§7Closing in §e" + remaining[0] + "s", 0, 25, 5);
+                        }
+                    }
+                } else {
+                    cancel();
+                    rebootCountdownTask = null;
+                    // Time is up — teleport everyone to Hub and close server to public
+                    Bukkit.broadcastMessage("§e§lSERVER REBOOT §7— Sending all players to Hub now!");
+                    for (Player p : Bukkit.getOnlinePlayers()) {
+                        multiWorldManager.teleportToHub(p);
+                        p.sendMessage("§eThe Factions server is rebooting. You have been moved to Hub.");
+                    }
+                    if (serverStatusManager != null) {
+                        serverStatusManager.setRebooting(true);
+                        serverStatusManager.closeServer();
+                    }
+                    Bukkit.broadcastMessage("§c§lSERVER CLOSED §7— Use §e/serveropen §7when ready to reopen.");
+                }
+            }
+        }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /**
      * Moves all online players to Hub, then resets the faction worlds WITHOUT
      * stopping the server process. Players remain connected in Hub during the
-     * reset (≈30 seconds) and can re-enter Factions once the new world is ready.
+     * reset (≠30 seconds) and can re-enter Factions once the new world is ready.
      * Used by /rebootforce and /forcereboot.
      */
     public void closeServerForReboot(String initiator) {

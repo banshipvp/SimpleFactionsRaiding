@@ -71,7 +71,7 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new CannonConsistencyListener(this), this);
         getServer().getPluginManager().registerEvents(collectionChestListener, this);
         getServer().getPluginManager().registerEvents(worldRulesListener, this);
-        getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand, simpleFactionsPlugin), this);
+        getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand, simpleFactionsPlugin, serverStatusManager), this);
         getServer().getPluginManager().registerEvents(playerProfileListener, this);
         getServer().getPluginManager().registerEvents(serverStatusManager, this);
         getServer().getPluginManager().registerEvents(new RespawnListener(this, multiWorldManager), this);
