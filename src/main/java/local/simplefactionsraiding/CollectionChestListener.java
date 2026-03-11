@@ -1,10 +1,12 @@
 package local.simplefactionsraiding;
 
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
@@ -27,6 +29,36 @@ public class CollectionChestListener implements Listener {
     public CollectionChestListener(CollectionChestManager chestManager, CollectionFilterGUI filterGUI) {
         this.chestManager = chestManager;
         this.filterGUI = filterGUI;
+    }
+
+    /**
+     * Auto-registers a collection chest when it is placed from the player's inventory.
+     * Detects collection chest items by their display name (set by the XP shop).
+     */
+    @EventHandler
+    public void onBlockPlace(BlockPlaceEvent event) {
+        ItemStack item = event.getItemInHand();
+        if (!isCollectionChestItem(item)) return;
+
+        Block placed = event.getBlockPlaced();
+        boolean trapped = item.getType() == Material.TRAPPED_CHEST;
+
+        if (!chestManager.isCollectionChest(placed)) {
+            chestManager.createCollectionChest(placed, trapped);
+            event.getPlayer().sendMessage("§a✓ Collection Chest placed and registered! Use §e/collectionfilter §ato configure.");
+        }
+    }
+
+    /**
+     * Returns true if the given ItemStack is a purchasable collection chest item
+     * (identified by display name containing "Collection Chest").
+     */
+    private boolean isCollectionChestItem(ItemStack item) {
+        if (item == null || item.getType().isAir()) return false;
+        if (item.getType() != Material.CHEST && item.getType() != Material.TRAPPED_CHEST) return false;
+        if (!item.hasItemMeta()) return false;
+        String name = item.getItemMeta().getDisplayName();
+        return name != null && name.contains("Collection Chest");
     }
 
     @EventHandler

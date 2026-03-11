@@ -74,6 +74,7 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new HubSelectorListener(multiWorldManager, hubCommand, simpleFactionsPlugin), this);
         getServer().getPluginManager().registerEvents(playerProfileListener, this);
         getServer().getPluginManager().registerEvents(serverStatusManager, this);
+        getServer().getPluginManager().registerEvents(new RespawnListener(this, multiWorldManager), this);
 
         getLogger().info("/f tnt commands handled by FactionTntCommandListener.");
 

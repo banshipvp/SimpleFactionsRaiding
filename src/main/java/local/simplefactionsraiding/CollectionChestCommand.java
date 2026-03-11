@@ -1,12 +1,14 @@
 package local.simplefactionsraiding;
 
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.Container;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
 /**
  * Command handler for /collectionfilter and related collection chest commands.
@@ -38,24 +40,52 @@ public class CollectionChestCommand implements CommandExecutor {
     }
 
     private boolean handleCollectionFilterCommand(Player player, String[] args) {
-        // 1. Try exact line-of-sight first
+        // 1. Try exact line-of-sight first – works whether chest was registered via
+        //    /createcollectionchest, BlockPlaceEvent, or a previous /collectionfilter.
         Block targetBlock = player.getTargetBlockExact(5);
         if (targetBlock != null && chestManager.isCollectionChest(targetBlock)) {
             filterGUI.openMainFilterMenu(player, targetBlock);
             return true;
         }
 
-        // 2. Fall back to scanning all registered collection chests within 5 blocks.
-        //    This handles cases where the player is standing next to a chest, holding
-        //    a collection chest item, or is not looking directly at the chest.
+        // 2. If holding a collection chest item AND looking at any chest block,
+        //    register it on the spot (covers chests placed before the auto-register
+        //    listener existed) and open the filter GUI.
+        ItemStack heldItem = player.getInventory().getItemInMainHand();
+        if (isCollectionChestItem(heldItem) && targetBlock != null
+                && (targetBlock.getType() == Material.CHEST
+                    || targetBlock.getType() == Material.TRAPPED_CHEST)) {
+            boolean trapped = targetBlock.getType() == Material.TRAPPED_CHEST;
+            if (!chestManager.isCollectionChest(targetBlock)) {
+                chestManager.createCollectionChest(targetBlock, trapped);
+                player.sendMessage("§a✓ Collection Chest registered!");
+            }
+            filterGUI.openMainFilterMenu(player, targetBlock);
+            return true;
+        }
+
+        // 3. Fall back to scanning all registered collection chests within 5 blocks.
+        //    This handles cases where the player is standing next to a chest.
         Block nearest = findNearestCollectionChest(player, 5);
         if (nearest != null) {
             filterGUI.openMainFilterMenu(player, nearest);
             return true;
         }
 
-        player.sendMessage("§cNo collection chest found within 5 blocks.");
+        player.sendMessage("§cNo collection chest found within 5 blocks. Look at a collection chest or place one first.");
         return true;
+    }
+
+    /**
+     * Returns true if the given ItemStack is a collection chest item
+     * (identified by display name – matches items sold by the XP shop).
+     */
+    private boolean isCollectionChestItem(ItemStack item) {
+        if (item == null || item.getType().isAir()) return false;
+        if (item.getType() != Material.CHEST && item.getType() != Material.TRAPPED_CHEST) return false;
+        if (!item.hasItemMeta()) return false;
+        String name = item.getItemMeta().getDisplayName();
+        return name != null && name.contains("Collection Chest");
     }
 
     /**

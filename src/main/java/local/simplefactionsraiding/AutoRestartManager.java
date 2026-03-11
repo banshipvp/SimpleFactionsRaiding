@@ -1,9 +1,15 @@
 package local.simplefactionsraiding;
 
 import org.bukkit.Bukkit;
+import org.bukkit.World;
+import org.bukkit.WorldCreator;
+import org.bukkit.WorldType;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
+
+import java.io.File;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -155,30 +161,133 @@ public class AutoRestartManager {
     }
 
     /**
-     * Immediately closes the server to public players, moves all online players
-     * to Hub, then begins a single 60-second countdown before restarting.
-     * Used by /rebootforce.
+     * Moves all online players to Hub, then resets the faction worlds WITHOUT
+     * stopping the server process. Players remain connected in Hub during the
+     * reset (≈30 seconds) and can re-enter Factions once the new world is ready.
+     * Used by /rebootforce and /forcereboot.
      */
     public void closeServerForReboot(String initiator) {
         this.manualRestartActive = true;
         this.initiatedBy = initiator == null || initiator.isBlank() ? "Admin" : initiator;
 
-        // Broadcast and send everyone to hub immediately
-        Bukkit.broadcastMessage("§4§lSERVER REBOOT §7— Initiated by §e" + this.initiatedBy);
-        Bukkit.broadcastMessage("§cFactions server restarting. All players moved to Hub — back online in ~60 seconds.");
+        // Move every player to Hub immediately — they stay connected the whole time.
+        Bukkit.broadcastMessage("§4§lMAP RESET §7— Initiated by §e" + this.initiatedBy);
+        Bukkit.broadcastMessage("§6The faction worlds are being wiped and regenerated. Stay in Hub!");
         for (Player player : Bukkit.getOnlinePlayers()) {
             multiWorldManager.teleportToHub(player);
-            player.sendMessage("§eThe Factions server is rebooting. You have been moved to Hub.");
+            player.sendMessage("§eThe faction map is resetting. You have been moved to Hub — stay here!");
         }
 
-        // One single countdown — after 60s do the actual restart.
-        // startPreRestartPhase closes logins, kicks non-staff, then calls doActualRestart.
+        // Block new logins while the worlds are being reset.
         if (serverStatusManager != null) {
-            serverStatusManager.startPreRestartPhase(60, this::doActualRestart);
+            serverStatusManager.closeServer();
+        }
+
+        // Short countdown so players can see what's happening, then reset worlds.
+        scheduleWorldReboot(30);
+    }
+
+    // ── World-reboot helpers (no server process restart) ────────────────────
+
+    /**
+     * Counts down {@code seconds} seconds with chat + title broadcasts, then
+     * calls {@link #doWorldReboot()}. Players are NOT kicked — they wait in Hub.
+     */
+    private void scheduleWorldReboot(int seconds) {
+        final int[] remaining = {Math.max(5, seconds)};
+        Bukkit.broadcastMessage("§6§lMAP RESET §7— World wipe begins in §e" + remaining[0] + " §7seconds. Stay in Hub!");
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                remaining[0]--;
+                if (remaining[0] > 0) {
+                    if (remaining[0] <= 10 || remaining[0] % 10 == 0) {
+                        Bukkit.broadcastMessage("§6§lMAP RESET §c— Starting in §e" + remaining[0] + "§c seconds...");
+                        for (Player p : Bukkit.getOnlinePlayers()) {
+                            p.sendTitle("§6§lMAP RESET", "§7Starting in §e" + remaining[0] + "s", 0, 25, 5);
+                        }
+                    }
+                } else {
+                    cancel();
+                    doWorldReboot();
+                }
+            }
+        }.runTaskTimer(plugin, 20L, 20L);
+    }
+
+    /** Resets all three faction worlds, then reopens the server. No process restart. */
+    private void doWorldReboot() {
+        Bukkit.broadcastMessage("§6§lMAP RESET §7— Wiping and regenerating faction worlds, please wait...");
+        for (Player p : Bukkit.getOnlinePlayers()) {
+            p.sendTitle("§6§lMAP RESET", "§7Regenerating worlds...", 0, 120, 10);
+        }
+
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            resetWorld(multiWorldManager.getFactionWorldName(), World.Environment.NORMAL);
+            resetWorld(multiWorldManager.getFactionNetherWorldName(), World.Environment.NETHER);
+            resetWorld(multiWorldManager.getFactionEndWorldName(), World.Environment.THE_END);
+
+            // Reset internal state
+            manualRestartActive = false;
+            initiatedBy = "System";
+            shutdownOnExecute = true;
+            secondsLeft = autoEnabled ? intervalSeconds : -1L;
+
+            // Reopen server to new logins
+            if (serverStatusManager != null) {
+                serverStatusManager.openServer();
+            }
+
+            Bukkit.broadcastMessage("§a§lMAP RESET COMPLETE §7— The faction worlds have been regenerated!");
+            Bukkit.broadcastMessage("§aFactions has reset. Use §e/spawn §aor §e/factions §ato enter the new world.");
+            for (Player p : Bukkit.getOnlinePlayers()) {
+                p.sendTitle("§a§lMAP RESET COMPLETE", "§7Enter the new world with §e/spawn", 10, 80, 20);
+            }
+        });
+    }
+
+    /** Evacuates remaining players from {@code worldName}, unloads it, deletes its folder, then recreates it. */
+    private void resetWorld(String worldName, World.Environment environment) {
+        World world = Bukkit.getWorld(worldName);
+        if (world != null) {
+            // Safety-net: move any lingering players (e.g. staff) to hub
+            for (Player p : world.getPlayers()) {
+                multiWorldManager.teleportToHub(p);
+            }
+            Bukkit.unloadWorld(world, false); // false = do NOT save old chunks
+        }
+
+        File worldFolder = new File(Bukkit.getWorldContainer(), worldName);
+        if (worldFolder.exists()) {
+            deleteRecursive(worldFolder);
+        }
+
+        World created = new WorldCreator(worldName)
+                .environment(environment)
+                .type(WorldType.NORMAL)
+                .generateStructures(true)
+                .createWorld();
+
+        if (created == null) {
+            plugin.getLogger().severe("[MapReset] Failed to recreate world: " + worldName);
         } else {
-            startManualRestart(60, initiator);
+            plugin.getLogger().info("[MapReset] Reset complete: " + worldName);
         }
     }
+
+    private void deleteRecursive(File file) {
+        if (file == null || !file.exists()) return;
+        File[] children = file.listFiles();
+        if (children != null) {
+            for (File child : children) {
+                deleteRecursive(child);
+            }
+        }
+        file.delete();
+    }
+
+    // ── Standard restart helpers ──────────────────────────────────────────────
 
     public void startManualRestart(int seconds, String initiator) {
         startManualRestart(seconds, initiator, true);
