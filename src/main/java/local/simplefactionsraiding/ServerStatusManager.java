@@ -20,6 +20,8 @@ public class ServerStatusManager implements Listener {
 
     /** True while the server is in dev-maintenance/reboot mode (post-countdown, waiting for /serveropen). */
     private boolean rebooting = false;
+    /** Epoch millis when rebooting was set to true; used for downtime display. */
+    private long rebootStartTime = 0;
 
     /** True while counting down the 60-second pre-restart window. */
     private boolean inPreRestart = false;
@@ -124,6 +126,11 @@ public class ServerStatusManager implements Listener {
 
     public void setRebooting(boolean rebooting) {
         this.rebooting = rebooting;
+        if (rebooting) {
+            rebootStartTime = System.currentTimeMillis();
+        } else {
+            rebootStartTime = 0;
+        }
     }
 
     public int getPreRestartSecondsLeft() {
@@ -132,6 +139,24 @@ public class ServerStatusManager implements Listener {
 
     public boolean isInPreRestart() {
         return inPreRestart;
+    }
+
+    /** Seconds since the server entered rebooting mode, or 0 if not rebooting. */
+    public long getDowntimeSeconds() {
+        if (!rebooting || rebootStartTime == 0) return 0;
+        return (System.currentTimeMillis() - rebootStartTime) / 1000;
+    }
+
+    /** Formatted downtime string, e.g. "§e5m 12s" or "§e45s". Returns "§7N/A" if not rebooting. */
+    public String getDowntimeDisplay() {
+        if (!rebooting || rebootStartTime == 0) return "§7N/A";
+        long s = (System.currentTimeMillis() - rebootStartTime) / 1000;
+        long h = s / 3600;
+        long m = (s % 3600) / 60;
+        long sec = s % 60;
+        if (h > 0) return "§e" + h + "h " + m + "m " + sec + "s";
+        if (m > 0) return "§e" + m + "m " + sec + "s";
+        return "§e" + sec + "s";
     }
 
     // ── Staff check ───────────────────────────────────────────────────────────

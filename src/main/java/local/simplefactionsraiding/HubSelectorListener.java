@@ -112,10 +112,12 @@ public class HubSelectorListener implements Listener {
             boolean closed = serverStatusManager != null && serverStatusManager.isServerClosed();
             boolean rebooting = serverStatusManager != null && serverStatusManager.isRebooting();
             if (rebooting) {
+                String downtime = serverStatusManager.getDowntimeDisplay();
                 meta.setDisplayName("§c§lFaction Server §7[§cREBOOTING§7]");
                 meta.setLore(List.of(
                     "§cServer is currently rebooting.",
-                    "§7Please check back soon — it will reopen shortly."
+                    "§7Down for: " + downtime,
+                    "§7The server will reopen once maintenance is done."
                 ));
             } else if (closed) {
                 meta.setDisplayName("§c§lFaction Server §7[§cCLOSED§7]");

@@ -166,4 +166,8 @@ public class SimpleFactionsRaidingPlugin extends JavaPlugin {
         return collectionFilterGUI;
     }
 
+    public ServerStatusManager getServerStatusManager() {
+        return serverStatusManager;
+    }
+
 }
