@@ -1,5 +1,6 @@
 package local.simplefactionsraiding;
 
+import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.Container;
 import org.bukkit.command.Command;
@@ -37,16 +38,47 @@ public class CollectionChestCommand implements CommandExecutor {
     }
 
     private boolean handleCollectionFilterCommand(Player player, String[] args) {
-        // Check if player is looking at a collection chest
+        // 1. Try exact line-of-sight first
         Block targetBlock = player.getTargetBlockExact(5);
-        if (targetBlock == null || !chestManager.isCollectionChest(targetBlock)) {
-            player.sendMessage("§cYou must be looking at a collection chest within 5 blocks.");
+        if (targetBlock != null && chestManager.isCollectionChest(targetBlock)) {
+            filterGUI.openMainFilterMenu(player, targetBlock);
             return true;
         }
 
-        filterGUI.openMainFilterMenu(player, targetBlock);
-        player.sendMessage("§a✓ Opened collection chest filter menu.");
+        // 2. Fall back to scanning all registered collection chests within 5 blocks.
+        //    This handles cases where the player is standing next to a chest, holding
+        //    a collection chest item, or is not looking directly at the chest.
+        Block nearest = findNearestCollectionChest(player, 5);
+        if (nearest != null) {
+            filterGUI.openMainFilterMenu(player, nearest);
+            return true;
+        }
+
+        player.sendMessage("§cNo collection chest found within 5 blocks.");
         return true;
+    }
+
+    /**
+     * Finds the nearest registered collection chest within {@code radius} blocks of the player.
+     * Returns null if none found.
+     */
+    private Block findNearestCollectionChest(Player player, int radius) {
+        Location loc = player.getLocation();
+        Block nearest = null;
+        double nearestDist = Double.MAX_VALUE;
+
+        for (String key : chestManager.getRegisteredChests()) {
+            Block block = chestManager.deserializeBlock(key);
+            if (block == null || !block.getWorld().equals(loc.getWorld())) continue;
+            if (!chestManager.isCollectionChest(block)) continue;
+            double dist = block.getLocation().distance(loc);
+            if (dist <= radius && dist < nearestDist) {
+                nearestDist = dist;
+                nearest = block;
+            }
+        }
+
+        return nearest;
     }
 
     private boolean handleCreateCommand(Player player, String[] args) {
